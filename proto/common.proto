@@ -1,0 +1,87 @@
+syntax = "proto3";
+
+package qhome.common.v1;
+
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+
+option java_multiple_files = true;
+option java_package = "com.qhome.common.v1";
+option csharp_namespace = "QHome.Common.V1";
+option go_package = "github.com/qhome/backend/gen/qhome/common/v1;commonv1";
+
+message RequestContext {
+  string correlation_id = 1;
+  string causation_id = 2;
+  string tenant_id = 3;
+  string apartment_id = 4;
+  string actor_id = 5;
+  string subject = 6;
+  string source = 7;
+  string traceparent = 8;
+  string tracestate = 9;
+}
+
+message CommandMetadata {
+  RequestContext context = 1;
+  string idempotency_key = 2;
+  string request_id = 3;
+}
+
+message ResourceRef {
+  string resource_type = 1;
+  string resource_id = 2;
+  string tenant_id = 3;
+}
+
+message Money {
+  int64 minor_units = 1;
+  string currency_code = 2;
+}
+
+message PageRequest {
+  uint32 page_size = 1;
+  string page_token = 2;
+  string order_by = 3;
+  bool descending = 4;
+}
+
+message PageResponse {
+  string next_page_token = 1;
+  uint64 total_size = 2;
+  bool total_size_known = 3;
+}
+
+message FieldViolation {
+  string field = 1;
+  string description = 2;
+}
+
+message ErrorDetail {
+  string code = 1;
+  string message = 2;
+  repeated FieldViolation violations = 3;
+  bool retryable = 4;
+  google.protobuf.Duration retry_after = 5;
+  string correlation_id = 6;
+  map<string, string> metadata = 7;
+}
+
+message EventEnvelope {
+  string event_id = 1;
+  string event_type = 2;
+  string event_version = 3;
+  string aggregate_type = 4;
+  string aggregate_id = 5;
+  string tenant_id = 6;
+  string actor_id = 7;
+  string correlation_id = 8;
+  string causation_id = 9;
+  google.protobuf.Timestamp occurred_at = 10;
+  string producer = 11;
+  string traceparent = 12;
+  string tracestate = 13;
+  string payload_type = 14;
+  bytes payload = 15;
+  map<string, string> attributes = 16;
+}
