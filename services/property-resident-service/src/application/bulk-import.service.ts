@@ -1,4 +1,5 @@
 import { Readable } from 'node:stream';
+import { finished } from 'node:stream/promises';
 import ExcelJS from 'exceljs';
 import { ApartmentResidentRole, ImportBatch, ResidentImportRow, VehicleImportRow, VehicleType } from '../domain/models';
 import { PropertyResidentValidationError } from '../domain/errors';
@@ -102,6 +103,10 @@ export class BulkImportService {
         completedAt: new Date(),
       });
       throw error;
+    } finally {
+      const stream = input.stream as Readable;
+      stream.destroy();
+      await finished(stream, { cleanup: true }).catch(() => undefined);
     }
   }
 

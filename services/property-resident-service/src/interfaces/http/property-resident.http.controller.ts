@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Headers, Param, Patch, Post, Query, UploadedFile, UseInterceptors } from '@nestjs/common';
+import { Body, Controller, Get, Headers, Param, Patch, Post, Query, Req, UploadedFile, UseInterceptors } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { diskStorage } from 'multer';
 import { createReadStream } from 'node:fs';
@@ -6,6 +6,8 @@ import { unlink } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { PropertyResidentService } from '../../application/property-resident.service';
 import { BulkImportService } from '../../application/bulk-import.service';
+import { ContextRequest, getRequestContext } from '../../../../../libs/common/src/base-microservice';
+import { assertActorScope, assertApartmentScope, assertStaffScope, isStaffContext } from '../../../../../libs/common/src/apartment-scope';
 
 interface UploadedFileLike {
   path: string;
@@ -25,8 +27,8 @@ export class PropertyResidentHttpController {
   }
 
   @Post('/buildings')
-  createBuilding(@Headers('x-tenant-id') projectId: string, @Body() body: { code: string; name: string; address?: string }) {
-    return this.service.createBuilding(projectId, body);
+  createBuilding(@Req() request: ContextRequest, @Body() body: { code: string; name: string; address?: string }) {
+    const context = getRequestContext(request); assertStaffScope(context); return this.service.createBuilding(context.tenantId, body);
   }
 
   @Get('/buildings/:buildingId')
@@ -35,8 +37,8 @@ export class PropertyResidentHttpController {
   }
 
   @Patch('/buildings/:buildingId')
-  updateBuilding(@Headers('x-tenant-id') projectId: string, @Param('buildingId') buildingId: string, @Body() body: { code?: string; name?: string; address?: string; status?: string; expectedVersion?: number }) {
-    return this.service.updateBuilding(projectId, { projectId, buildingId, ...body });
+  updateBuilding(@Req() request: ContextRequest, @Param('buildingId') buildingId: string, @Body() body: { code?: string; name?: string; address?: string; status?: string; expectedVersion?: number }) {
+    const context = getRequestContext(request); assertStaffScope(context); return this.service.updateBuilding(context.tenantId, { projectId: context.tenantId, buildingId, ...body });
   }
 
   @Get('/buildings/:buildingId/blocks')
@@ -45,8 +47,8 @@ export class PropertyResidentHttpController {
   }
 
   @Post('/buildings/:buildingId/blocks')
-  createBlock(@Headers('x-tenant-id') projectId: string, @Param('buildingId') buildingId: string, @Body() body: { code: string; name: string }) {
-    return this.service.createBlock(projectId, { projectId, buildingId, ...body });
+  createBlock(@Req() request: ContextRequest, @Param('buildingId') buildingId: string, @Body() body: { code: string; name: string }) {
+    const context = getRequestContext(request); assertStaffScope(context); return this.service.createBlock(context.tenantId, { projectId: context.tenantId, buildingId, ...body });
   }
 
   @Get('/blocks/:blockId/floors')
@@ -55,63 +57,87 @@ export class PropertyResidentHttpController {
   }
 
   @Post('/blocks/:blockId/floors')
-  createFloor(@Headers('x-tenant-id') projectId: string, @Param('blockId') blockId: string, @Body() body: { floorNo: number; label: string }) {
-    return this.service.createFloor(projectId, { projectId, blockId, ...body });
+  createFloor(@Req() request: ContextRequest, @Param('blockId') blockId: string, @Body() body: { floorNo: number; label: string }) {
+    const context = getRequestContext(request); assertStaffScope(context); return this.service.createFloor(context.tenantId, { projectId: context.tenantId, blockId, ...body });
   }
 
   @Post('/apartments')
-  createApartment(@Headers('x-tenant-id') projectId: string, @Body() body: { buildingId: string; blockId: string; floorId: string; code: string; netAreaSqm: string; grossAreaSqm?: string; handoverStatus?: string }) {
-    return this.service.createApartment(projectId, { projectId, ...body });
+  createApartment(@Req() request: ContextRequest, @Body() body: { buildingId: string; blockId: string; floorId: string; code: string; netAreaSqm: string; grossAreaSqm?: string; handoverStatus?: string }) {
+    const context = getRequestContext(request);
+    assertStaffScope(context);
+    return this.service.createApartment(context.tenantId, { projectId: context.tenantId, ...body });
   }
 
   @Get('/apartments/:apartmentId')
-  getApartment(@Headers('x-tenant-id') projectId: string, @Param('apartmentId') apartmentId: string) {
-    return this.service.getApartment(projectId, apartmentId);
+  getApartment(@Req() request: ContextRequest, @Param('apartmentId') apartmentId: string) {
+    const context = getRequestContext(request);
+    assertApartmentScope(context, apartmentId);
+    return this.service.getApartment(context.tenantId, apartmentId);
   }
 
   @Patch('/apartments/:apartmentId')
-  updateApartment(@Headers('x-tenant-id') projectId: string, @Param('apartmentId') apartmentId: string, @Body() body: { netAreaSqm?: string; grossAreaSqm?: string; status?: string; handoverStatus?: string; expectedVersion?: number }) {
-    return this.service.updateApartment(projectId, { projectId, apartmentId, ...body });
+  updateApartment(@Req() request: ContextRequest, @Param('apartmentId') apartmentId: string, @Body() body: { netAreaSqm?: string; grossAreaSqm?: string; status?: string; handoverStatus?: string; expectedVersion?: number }) {
+    const context = getRequestContext(request);
+    assertStaffScope(context);
+    assertApartmentScope(context, apartmentId);
+    return this.service.updateApartment(context.tenantId, { projectId: context.tenantId, apartmentId, ...body });
   }
 
   @Post('/residents')
-  createResident(@Headers('x-tenant-id') projectId: string, @Body() body: { externalRef: string; userId: string; fullName: string; phone?: string; email?: string }) {
-    return this.service.createResident(projectId, { projectId, ...body });
+  createResident(@Req() request: ContextRequest, @Body() body: { externalRef: string; userId: string; fullName: string; phone?: string; email?: string }) {
+    const context = getRequestContext(request);
+    assertStaffScope(context);
+    return this.service.createResident(context.tenantId, { projectId: context.tenantId, ...body });
   }
 
   @Get('/residents/:residentId')
-  getResident(@Headers('x-tenant-id') projectId: string, @Param('residentId') residentId: string) {
-    return this.service.getResident(projectId, residentId);
+  getResident(@Req() request: ContextRequest, @Param('residentId') residentId: string) {
+    const context = getRequestContext(request);
+    assertActorScope(context, residentId);
+    return this.service.getResident(context.tenantId, residentId);
   }
 
   @Patch('/residents/:residentId')
-  updateResident(@Headers('x-tenant-id') projectId: string, @Param('residentId') residentId: string, @Body() body: { fullName?: string; phone?: string; email?: string; status?: string }) {
-    return this.service.updateResident(projectId, { projectId, residentId, ...body });
+  updateResident(@Req() request: ContextRequest, @Param('residentId') residentId: string, @Body() body: { fullName?: string; phone?: string; email?: string; status?: string; temporaryResidenceStatus?: string }) {
+    const context = getRequestContext(request);
+    assertActorScope(context, residentId);
+    if (body.temporaryResidenceStatus !== undefined) assertStaffScope(context);
+    return this.service.updateResident(context.tenantId, { projectId: context.tenantId, residentId, ...body });
   }
 
   @Get('/residents/:residentId/apartments')
-  listResidentApartments(@Headers('x-tenant-id') projectId: string, @Param('residentId') residentId: string) {
-    return this.service.listResidentApartments(projectId, residentId);
+  listResidentApartments(@Req() request: ContextRequest, @Param('residentId') residentId: string) {
+    const context = getRequestContext(request);
+    assertActorScope(context, residentId);
+    return this.service.listResidentApartments(context.tenantId, residentId);
   }
 
   @Post('/residents/:residentId/active-apartment')
-  switchActiveApartment(@Headers('x-tenant-id') projectId: string, @Param('residentId') residentId: string, @Body() body: { apartmentId: string }) {
-    return this.service.switchActiveApartment(projectId, residentId, body.apartmentId);
+  switchActiveApartment(@Req() request: ContextRequest, @Param('residentId') residentId: string, @Body() body: { apartmentId: string }) {
+    const context = getRequestContext(request);
+    assertActorScope(context, residentId);
+    assertApartmentScope(context, body.apartmentId);
+    return this.service.switchActiveApartment(context.tenantId, residentId, body.apartmentId);
   }
 
   @Get('/apartments/:apartmentId/vehicles')
-  listApartmentVehicles(@Headers('x-tenant-id') projectId: string, @Param('apartmentId') apartmentId: string) {
-    return this.service.listApartmentVehicles(projectId, apartmentId);
+  listApartmentVehicles(@Req() request: ContextRequest, @Param('apartmentId') apartmentId: string) {
+    const context = getRequestContext(request);
+    assertApartmentScope(context, apartmentId);
+    return this.service.listApartmentVehicles(context.tenantId, apartmentId);
   }
 
   @Post('/vehicles')
-  createVehicle(@Headers('x-tenant-id') projectId: string, @Body() body: { residentId: string; apartmentId: string; externalRef: string; type: string; licensePlate: string; registrationNumber?: string; registrationObjectRef?: string }) {
-    return this.service.createVehicle(projectId, { projectId, ...body });
+  createVehicle(@Req() request: ContextRequest, @Body() body: { residentId: string; apartmentId: string; externalRef: string; type: string; licensePlate: string; registrationNumber?: string; registrationObjectRef?: string }) {
+    const context = getRequestContext(request);
+    assertApartmentScope(context, body.apartmentId);
+    assertActorScope(context, body.residentId);
+    return this.service.createVehicle(context.tenantId, { projectId: context.tenantId, ...body });
   }
 
   @Patch('/vehicles/:vehicleId')
-  updateVehicle(@Headers('x-tenant-id') projectId: string, @Headers('x-actor-id') residentId: string, @Param('vehicleId') vehicleId: string, @Body() body: { licensePlate?: string; status?: string; registrationNumber?: string; registrationObjectRef?: string }) {
-    return this.service.updateVehicle(projectId, { projectId, vehicleId, residentId, ...body });
+  updateVehicle(@Req() request: ContextRequest, @Param('vehicleId') vehicleId: string, @Body() body: { licensePlate?: string; status?: string; registrationNumber?: string; registrationObjectRef?: string }) {
+    const context = getRequestContext(request); if (!isStaffContext(context) && !context.actorId) throw new Error('authenticated actor context is required'); return this.service.updateVehicle(context.tenantId, { projectId: context.tenantId, vehicleId, residentId: context.actorId ?? context.subject!, ...body });
   }
 
   @Get('/buildings/:buildingId/contacts')
@@ -120,8 +146,8 @@ export class PropertyResidentHttpController {
   }
 
   @Post('/buildings/:buildingId/contacts')
-  createDirectoryEntry(@Headers('x-tenant-id') projectId: string, @Param('buildingId') buildingId: string, @Body() body: { departmentId: string; name: string; title?: string; phone?: string; email?: string; extension?: string; priority?: number }) {
-    return this.service.createDirectoryEntry(projectId, { projectId, buildingId, ...body });
+  createDirectoryEntry(@Req() request: ContextRequest, @Param('buildingId') buildingId: string, @Body() body: { departmentId: string; name: string; title?: string; phone?: string; email?: string; extension?: string; priority?: number }) {
+    const context = getRequestContext(request); assertStaffScope(context); return this.service.createDirectoryEntry(context.tenantId, { projectId: context.tenantId, buildingId, ...body });
   }
 
   @Post('/imports/residents-vehicles')
@@ -132,7 +158,10 @@ export class PropertyResidentHttpController {
     }),
     limits: { fileSize: Number(process.env.PROPERTY_RESIDENT_IMPORT_MAX_BYTES ?? 50 * 1024 * 1024), files: 1 },
   }))
-  async importResidentsAndVehicles(@Headers('x-tenant-id') projectId: string, @Headers('x-building-id') buildingId: string | undefined, @UploadedFile() file: UploadedFileLike) {
+  async importResidentsAndVehicles(@Req() request: ContextRequest, @Headers('x-building-id') buildingId: string | undefined, @UploadedFile() file: UploadedFileLike) {
+    const context = getRequestContext(request);
+    assertStaffScope(context);
+    const projectId = context.tenantId;
     if (!file?.path) throw new Error('Excel file is required');
     try {
       return await this.importer.importWorkbook({ projectId, buildingId, fileName: file.originalname, stream: createReadStream(file.path) });
