@@ -37,13 +37,14 @@ export class PrismaAssetRepository implements AssetRepository {
     });
   }
 
-  async transitionWorkOrder(input: { projectId: string; workOrderId: string; expectedVersion: number; transition: MaintenanceTransition; nextStatus: string }) {
+  async transitionWorkOrder(input: { projectId: string; workOrderId: string; expectedVersion: number; transition: MaintenanceTransition; nextStatus: string; correlationId: string }) {
     return this.prisma.$transaction(async (tx) => {
       const current = await tx.maintenanceWorkOrder.findFirst({ where: { id: input.workOrderId, projectId: input.projectId, version: input.expectedVersion } });
       if (!current) throw new Error('Work order not found or optimistic version conflict');
+      if (current.status !== input.transition.from) throw new Error(`Work order state changed from ${input.transition.from} to ${current.status}`);
       const updated = await tx.maintenanceWorkOrder.update({ where: { id: current.id }, data: { status: input.nextStatus as 'OPEN' | 'ASSIGNED' | 'IN_PROGRESS' | 'BLOCKED' | 'COMPLETED' | 'CANCELLED', version: { increment: 1 }, startedAt: input.nextStatus === 'IN_PROGRESS' && !current.startedAt ? new Date() : undefined, completedAt: input.nextStatus === 'COMPLETED' ? new Date() : undefined } });
-      await tx.auditLog.create({ data: { projectId: input.projectId, actorId: input.transition.actorId, action: 'WORK_ORDER_STATE_CHANGED', entityType: 'maintenance_work_order', entityId: updated.id, beforeState: current as unknown as Prisma.InputJsonValue, afterState: updated as unknown as Prisma.InputJsonValue, correlationId: 'state-transition' } });
-      await tx.outboxEvent.create({ data: eventData({ projectId: input.projectId, eventType: 'maintenance.work_order.state_changed.v1', aggregateType: 'maintenance_work_order', aggregateId: updated.id, payload: { from: input.transition.from, to: input.transition.to, reason: input.transition.reason } }) });
+      await tx.auditLog.create({ data: { projectId: input.projectId, actorId: input.transition.actorId, action: 'WORK_ORDER_STATE_CHANGED', entityType: 'maintenance_work_order', entityId: updated.id, beforeState: current as unknown as Prisma.InputJsonValue, afterState: updated as unknown as Prisma.InputJsonValue, correlationId: input.correlationId } });
+      await tx.outboxEvent.create({ data: eventData({ projectId: input.projectId, eventType: 'maintenance.work_order.state_changed.v1', aggregateType: 'maintenance_work_order', aggregateId: updated.id, payload: { from: input.transition.from, to: input.transition.to, reason: input.transition.reason }, correlationId: input.correlationId }) });
       return updated;
     });
   }
@@ -55,8 +56,10 @@ export class PrismaAssetRepository implements AssetRepository {
 
   async submitChecklist(input: { projectId: string; buildingId: string; executionId: string; assetId?: string; templateId: string; actorId: string; results: ChecklistSubmissionItem[]; highPriority: boolean; correlationId: string }) {
     return this.prisma.$transaction(async (tx) => {
-      const execution = await tx.checklistExecution.findFirst({ where: { id: input.executionId, projectId: input.projectId, templateId: input.templateId, status: 'IN_PROGRESS' } });
+      const lockedExecution = await tx.$queryRawUnsafe<Array<{ id: string; status: string; version: number }>>('SELECT id, status, version FROM checklist_executions WHERE id = $1::uuid AND project_id = $2::uuid AND template_id = $3::uuid FOR UPDATE', input.executionId, input.projectId, input.templateId);
+      const execution = lockedExecution[0];
       if (!execution) throw new Error('Checklist execution not found or already submitted');
+      if (execution.status !== 'IN_PROGRESS') throw new Error('Checklist execution not found or already submitted');
       await tx.checklistResult.createMany({ data: input.results.map((result) => ({ executionId: execution.id, itemId: result.itemId, status: result.status, severity: result.severity ?? 'NORMAL', notes: result.notes, evidenceRef: result.evidenceRef })) });
       await tx.checklistExecution.update({ where: { id: execution.id }, data: { status: 'SUBMITTED', submittedAt: new Date(), version: { increment: 1 } } });
       let workOrderId: string | undefined;
@@ -64,11 +67,33 @@ export class PrismaAssetRepository implements AssetRepository {
         const incident = await tx.pcccIncident.create({ data: { projectId: input.projectId, buildingId: input.buildingId, assetId: input.assetId, checklistId: execution.id, title: 'Critical checklist failure', description: 'Critical technical/PCCC checklist item failed', reportedBy: input.actorId } });
         const order = await tx.maintenanceWorkOrder.create({ data: { projectId: input.projectId, assetId: input.assetId, source: 'CHECKLIST', priority: 'CRITICAL', status: 'OPEN', deduplicationKey: 'checklist-critical:' + execution.id, title: 'Urgent checklist failure remediation', description: incident.description } });
         workOrderId = order.id;
-        await tx.outboxEvent.create({ data: eventData({ projectId: input.projectId, eventType: 'HIGH_PRIORITY_INCIDENT', aggregateType: 'pccc_incident', aggregateId: incident.id, payload: { incidentId: incident.id, workOrderId: order.id, executionId: execution.id }, correlationId: input.correlationId }) });
+        await tx.outboxEvent.create({ data: { ...eventData({ projectId: input.projectId, eventType: 'HIGH_PRIORITY_INCIDENT', aggregateType: 'pccc_incident', aggregateId: incident.id, payload: { incidentId: incident.id, workOrderId: order.id, executionId: execution.id, projectId: input.projectId, buildingId: input.buildingId, priority: 'HIGH_PRIORITY_INCIDENT' }, correlationId: input.correlationId }), topic: 'qhome.workforce.high-priority-incidents.v1' } });
       }
       await tx.auditLog.create({ data: { projectId: input.projectId, actorId: input.actorId, action: 'CHECKLIST_SUBMITTED', entityType: 'checklist_execution', entityId: execution.id, afterState: { highPriority: input.highPriority } as Prisma.InputJsonValue, correlationId: input.correlationId } });
       return { executionId: execution.id, workOrderId };
     });
+  }
+
+  async recordPcccInspection(input: { projectId: string; buildingId: string; deviceId: string; assetId: string; inspectedBy: string; status: 'PASSED' | 'FAILED'; inspectedAt: Date; validUntil?: Date; findings?: string; certificateRef?: string; correlationId: string }) {
+    return this.prisma.$transaction(async (tx) => {
+      const deviceRows = await tx.$queryRawUnsafe<Array<{ id: string; project_id: string; building_id: string; asset_id: string; inspection_interval_days: number; status: string }>>('SELECT id, project_id, building_id, asset_id, inspection_interval_days, status FROM pccc_devices WHERE id = $1::uuid AND project_id = $2::uuid AND building_id = $3::uuid FOR UPDATE', input.deviceId, input.projectId, input.buildingId);
+      const device = deviceRows[0];
+      if (!device || device.asset_id !== input.assetId) throw new Error('PCCC device is outside the project scope');
+      const validUntil = input.validUntil ?? new Date(input.inspectedAt.getTime() + device.inspection_interval_days * 86_400_000);
+      const inspection = await tx.pcccInspection.create({ data: { projectId: input.projectId, buildingId: input.buildingId, assetId: input.assetId, deviceId: input.deviceId, status: input.status, inspectedBy: input.inspectedBy, inspectedAt: input.inspectedAt, validUntil, findings: input.findings, certificateRef: input.certificateRef } });
+      await tx.pcccDevice.update({ where: { id: input.deviceId }, data: { status: input.status === 'PASSED' ? 'OPERATIONAL' : 'FAILED', nextInspectionAt: validUntil, updatedAt: new Date() } });
+      let incidentId: string | undefined;
+      let workOrderId: string | undefined;
+      if (input.status === 'FAILED') {
+        const incident = await tx.pcccIncident.create({ data: { projectId: input.projectId, buildingId: input.buildingId, assetId: input.assetId, status: 'OPEN', severity: 'CRITICAL', title: 'PCCC inspection failed', description: input.findings ?? 'PCCC inspection marked as failed', reportedBy: input.inspectedBy } });
+        const order = await tx.maintenanceWorkOrder.create({ data: { projectId: input.projectId, assetId: input.assetId, source: 'INCIDENT', priority: 'CRITICAL', status: 'OPEN', deduplicationKey: `pccc-inspection-failure:${inspection.id}`, title: 'Urgent PCCC remediation', description: incident.description } });
+        incidentId = incident.id;
+        workOrderId = order.id;
+        await tx.outboxEvent.create({ data: { ...eventData({ projectId: input.projectId, eventType: 'HIGH_PRIORITY_INCIDENT', aggregateType: 'pccc_incident', aggregateId: incident.id, payload: { incidentId: incident.id, workOrderId: order.id, inspectionId: inspection.id, projectId: input.projectId, buildingId: input.buildingId, priority: 'HIGH_PRIORITY_INCIDENT' }, correlationId: input.correlationId }), topic: 'qhome.workforce.high-priority-incidents.v1' } });
+      }
+      await tx.auditLog.create({ data: { projectId: input.projectId, actorId: input.inspectedBy, action: 'PCCC_INSPECTION_RECORDED', entityType: 'pccc_inspection', entityId: inspection.id, afterState: inspection as unknown as Prisma.InputJsonValue, correlationId: input.correlationId } });
+      return { inspectionId: inspection.id, incidentId, workOrderId };
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable, maxWait: 5000, timeout: 15000 });
   }
 
   async findDueMaintenancePlans(now: Date, limit: number, cursor?: string) {

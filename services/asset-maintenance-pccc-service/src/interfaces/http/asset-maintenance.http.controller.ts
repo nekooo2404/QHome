@@ -29,4 +29,9 @@ export class AssetMaintenanceHttpController {
   submitChecklist(@Param('projectId') projectId: string, @Param('executionId') executionId: string, @Headers('x-actor-id') actorId: string, @Headers('x-correlation-id') correlationId: string, @Body() body: { buildingId: string; assetId?: string; templateId: string; results: Array<{ itemId: string; status: 'PASS' | 'FAIL' | 'NOT_APPLICABLE'; severity?: 'NORMAL' | 'CRITICAL'; notes?: string; evidenceRef?: string }> }) {
     return this.service.submitChecklist({ ...body, projectId, executionId, actorId, correlationId });
   }
+
+  @Post('/projects/:projectId/pccc/devices/:deviceId/inspections')
+  recordPcccInspection(@Param('projectId') projectId: string, @Param('deviceId') deviceId: string, @Headers('x-actor-id') inspectedBy: string, @Headers('x-correlation-id') correlationId: string, @Body() body: { buildingId: string; assetId: string; status: 'PASSED' | 'FAILED'; inspectedAt: string; validUntil?: string; findings?: string; certificateRef?: string }) {
+    return this.service.recordPcccInspection({ ...body, projectId, deviceId, inspectedBy, correlationId });
+  }
 }

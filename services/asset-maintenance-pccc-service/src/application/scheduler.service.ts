@@ -18,6 +18,7 @@ export class MaintenanceSchedulerService {
         cursor = page.nextCursor;
         if (cursor) await this.cursors.set('maintenance-due', cursor, 300);
       } while (cursor);
+      await this.cursors.set('maintenance-due', '', 300);
       return { created, skipped: false };
     } finally {
       await lock.release();
@@ -39,6 +40,7 @@ export class MaintenanceSchedulerService {
         cursor = page.nextCursor;
         if (cursor) await this.cursors.set('pccc-expiry', cursor, 300);
       } while (cursor);
+      await this.cursors.set('pccc-expiry', '', 300);
       return { created, skipped: false };
     } finally {
       await lock.release();

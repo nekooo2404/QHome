@@ -6,4 +6,5 @@ export const ASSET_TOKENS = {
   Lock: Symbol('ASSET_LOCK'),
   Cursor: Symbol('ASSET_CURSOR'),
   IncidentPublisher: Symbol('ASSET_INCIDENT_PUBLISHER'),
+  OutboxRelay: Symbol('ASSET_OUTBOX_RELAY'),
 } as const;
