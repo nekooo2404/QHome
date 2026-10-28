@@ -30,6 +30,9 @@ message RequestContext {
   string client_type = 10;
   repeated string scopes = 11;
   string session_id = 12;
+  string building_id = 20;
+  string roles_header = 21;
+  string context_timestamp = 22;
 }
 
 message CommandMetadata {

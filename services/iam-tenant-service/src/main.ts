@@ -1,5 +1,6 @@
 import { BaseMicroservice } from '../../../libs/common/src/base-microservice';
 import { IamTenantModule } from './iam-tenant.module';
+import { verifyRequestContextProof } from '../../../libs/common/src/context-proof';
 
 void BaseMicroservice.bootstrap({
   module: IamTenantModule,
@@ -16,7 +17,7 @@ void BaseMicroservice.bootstrap({
   publicPaths: ['/.well-known/jwks.json'],
   otlpEndpoint: process.env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT,
   verifyRequestContext: (context, transport, proof) => {
-    if (!proof || proof.length < 32) throw new Error(`authenticated context proof is required for ${transport}`);
+    verifyRequestContextProof(process.env.QHOME_CONTEXT_HMAC_SECRET ?? '', context, proof, transport);
     if (!context.tenantId || !context.correlationId) throw new Error('authenticated tenant and correlation context are required');
   },
 }).catch((error: unknown) => {

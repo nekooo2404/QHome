@@ -17,6 +17,7 @@ import type { Metadata } from '@grpc/grpc-js';
 import { NodeSDK } from '@opentelemetry/sdk-node';
 import { resourceFromAttributes } from '@opentelemetry/resources';
 import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http';
+import { ContextVerificationError } from './context-proof';
 
 type RpcExceptionConstructor = new (error: string | Record<string, unknown>) => Error;
 type GrpcStatusCodes = typeof import('@grpc/grpc-js').status;
@@ -70,10 +71,14 @@ export interface BaseMicroserviceOptions {
 export interface RequestContextValue {
   correlationId: string;
   tenantId: string;
+  buildingId?: string;
   apartmentId?: string;
   actorId?: string;
   subject?: string;
   clientType?: string;
+  sessionId?: string;
+  rolesHeader?: string;
+  contextTimestamp?: string;
   traceparent?: string;
   tracestate?: string;
   scopes?: string[];
@@ -113,7 +118,7 @@ type HttpResponse = {
 };
 
 type HeaderMap = Record<string, string>;
-type ContextLike = Partial<Pick<RequestContextValue, 'correlationId' | 'tenantId' | 'apartmentId' | 'actorId' | 'subject' | 'clientType' | 'traceparent' | 'tracestate' | 'contextProof'>> & {
+type ContextLike = Partial<Pick<RequestContextValue, 'correlationId' | 'tenantId' | 'buildingId' | 'apartmentId' | 'actorId' | 'subject' | 'clientType' | 'sessionId' | 'rolesHeader' | 'contextTimestamp' | 'traceparent' | 'tracestate' | 'contextProof'>> & {
   scopes?: string[];
 };
 
@@ -209,10 +214,14 @@ export function injectHttpContext(headers: HeaderMap, context: RequestContextVal
   const next = { ...headers };
   next['x-correlation-id'] = context.correlationId;
   next['x-tenant-id'] = context.tenantId;
+  if (context.buildingId) next['x-building-id'] = context.buildingId;
   if (context.apartmentId) next['x-apartment-id'] = context.apartmentId;
   if (context.actorId) next['x-actor-id'] = context.actorId;
   if (context.subject) next['x-subject'] = context.subject;
   if (context.clientType) next['x-client-type'] = context.clientType;
+  if (context.sessionId) next['x-session-id'] = context.sessionId;
+  if (context.rolesHeader) next['x-roles'] = context.rolesHeader;
+  if (context.contextTimestamp) next['x-context-timestamp'] = context.contextTimestamp;
   if (context.traceparent) next.traceparent = context.traceparent;
   if (context.tracestate) next.tracestate = context.tracestate;
   if (context.scopes?.length) next['x-scopes'] = context.scopes.join(' ');
@@ -237,9 +246,11 @@ export function assertCommandContextMatches(commandContext: ContextLike | undefi
   const pairs: Array<[keyof ContextLike, string | undefined]> = [
     ['correlationId', transportContext.correlationId],
     ['tenantId', transportContext.tenantId],
+    ['buildingId', transportContext.buildingId],
     ['apartmentId', transportContext.apartmentId],
     ['actorId', transportContext.actorId],
     ['subject', transportContext.subject],
+    ['sessionId', transportContext.sessionId],
   ];
   for (const [key, expected] of pairs) {
     const provided = commandContext[key];
@@ -335,6 +346,9 @@ function httpStatusFromGrpc(code: unknown): number {
 }
 
 function normalizeException(exception: unknown): NormalizedError {
+  if (exception instanceof ContextVerificationError) {
+    return { statusCode: 401, code: exception.code, message: exception.message };
+  }
   if (exception instanceof HttpException) {
     const httpException = exception as HttpException;
     const response = httpException.getResponse();
@@ -478,10 +492,14 @@ export class GrpcContextInterceptor implements NestInterceptor {
     const requestContext: RequestContextValue = {
       correlationId,
       tenantId,
+      buildingId: metadata ? optionalMetadata(metadata, 'x-building-id') : undefined,
       apartmentId: metadata ? optionalMetadata(metadata, 'x-apartment-id') : undefined,
       actorId: metadata ? optionalMetadata(metadata, 'x-actor-id') : undefined,
       subject: metadata ? optionalMetadata(metadata, 'x-subject') : undefined,
       clientType: metadata ? optionalMetadata(metadata, 'x-client-type') : undefined,
+      sessionId: metadata ? optionalMetadata(metadata, 'x-session-id') : undefined,
+      rolesHeader: metadata ? optionalMetadata(metadata, 'x-roles', 4096) : undefined,
+      contextTimestamp: metadata ? optionalMetadata(metadata, 'x-context-timestamp', 32) : undefined,
       traceparent: metadata ? optionalMetadata(metadata, 'traceparent') : undefined,
       tracestate: metadata ? optionalMetadata(metadata, 'tracestate') : undefined,
       scopes: metadata ? parseScopes(optionalMetadata(metadata, 'x-scopes')) : undefined,
@@ -608,10 +626,14 @@ export class BaseMicroservice {
           const requestContext: RequestContextValue = {
             correlationId,
             tenantId,
+            buildingId: optionalHeader(request, 'x-building-id'),
             apartmentId: optionalHeader(request, 'x-apartment-id'),
             actorId: optionalHeader(request, 'x-actor-id'),
             subject: optionalHeader(request, 'x-subject'),
             clientType: optionalHeader(request, 'x-client-type'),
+            sessionId: optionalHeader(request, 'x-session-id'),
+            rolesHeader: optionalHeader(request, 'x-roles', 4096),
+            contextTimestamp: optionalHeader(request, 'x-context-timestamp', 32),
             traceparent: optionalHeader(request, 'traceparent'),
             tracestate: optionalHeader(request, 'tracestate'),
             scopes: parseScopes(optionalHeader(request, 'x-scopes')),
