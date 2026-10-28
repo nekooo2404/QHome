@@ -1,0 +1,16 @@
+import { Body, Controller, Get, Headers, Param, Patch, Post, Query } from '@nestjs/common';
+import { CskhService } from '../../application/cskh.service';
+
+@Controller('/v1/cskh')
+export class CskhHttpController {
+  constructor(private readonly service: CskhService) {}
+  private context(projectId: string, actorId: string, correlationId: string, buildingId?: string, apartmentId?: string) { if (!projectId || !actorId || !correlationId) throw new Error('request context is required'); return { projectId, actorId, correlationId, buildingId, apartmentId }; }
+  @Post('/news') createNews(@Headers('x-tenant-id') projectId: string, @Headers('x-actor-id') actorId: string, @Headers('x-correlation-id') correlationId: string, @Headers('x-building-id') buildingId: string | undefined, @Body() body: any) { return this.service.createNews(this.context(projectId, actorId, correlationId, buildingId), body); }
+  @Get('/news') listNews(@Headers('x-tenant-id') projectId: string, @Headers('x-actor-id') actorId: string, @Headers('x-correlation-id') correlationId: string, @Headers('x-building-id') buildingId: string | undefined, @Query() query: any) { return this.service.listNews(this.context(projectId, actorId, correlationId, buildingId), query); }
+  @Post('/tickets') createTicket(@Headers('x-tenant-id') projectId: string, @Headers('x-actor-id') actorId: string, @Headers('x-correlation-id') correlationId: string, @Headers('x-building-id') buildingId: string | undefined, @Headers('x-apartment-id') apartmentId: string | undefined, @Body() body: any) { return this.service.createTicket(this.context(projectId, actorId, correlationId, buildingId, apartmentId), body); }
+  @Get('/tickets') listTickets(@Headers('x-tenant-id') projectId: string, @Headers('x-actor-id') actorId: string, @Headers('x-correlation-id') correlationId: string, @Query() query: any) { return this.service.listTickets(this.context(projectId, actorId, correlationId), query); }
+  @Patch('/tickets/:ticketId/status') transition(@Headers('x-tenant-id') projectId: string, @Headers('x-actor-id') actorId: string, @Headers('x-correlation-id') correlationId: string, @Param('ticketId') ticketId: string, @Body() body: any) { return this.service.transitionTicket(this.context(projectId, actorId, correlationId), ticketId, body); }
+  @Post('/tickets/:ticketId/assign') assign(@Headers('x-tenant-id') projectId: string, @Headers('x-actor-id') actorId: string, @Headers('x-correlation-id') correlationId: string, @Param('ticketId') ticketId: string, @Body() body: any) { return this.service.assignTicket(this.context(projectId, actorId, correlationId), ticketId, body); }
+  @Post('/tickets/:ticketId/rating') rate(@Headers('x-tenant-id') projectId: string, @Headers('x-actor-id') actorId: string, @Headers('x-correlation-id') correlationId: string, @Param('ticketId') ticketId: string, @Body() body: any) { return this.service.rateTicket(this.context(projectId, actorId, correlationId), ticketId, body); }
+  @Post('/notifications/campaigns') campaign(@Headers('x-tenant-id') projectId: string, @Headers('x-actor-id') actorId: string, @Headers('x-correlation-id') correlationId: string, @Body() body: any) { return this.service.enqueueCampaign(this.context(projectId, actorId, correlationId), body); }
+}

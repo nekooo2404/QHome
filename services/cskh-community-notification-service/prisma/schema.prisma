@@ -1,0 +1,286 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("CSKH_NOTIFICATION_DATABASE_URL")
+}
+
+enum NewsFeedType {
+  BQT_BQL
+  INTERNAL_COMMUNITY
+  GOVERNMENT
+}
+
+enum NewsFeedStatus {
+  DRAFT
+  SCHEDULED
+  PUBLISHED
+  ARCHIVED
+}
+
+enum TicketType {
+  SUGGESTION
+  SUPPORT
+  COMPLAINT
+}
+
+enum TicketPriority {
+  LOW
+  NORMAL
+  HIGH
+  URGENT
+}
+
+enum TicketStatus {
+  OPEN
+  ASSIGNED
+  IN_PROGRESS
+  WAITING_RESIDENT
+  RESOLVED
+  CLOSED
+  REJECTED
+}
+
+enum TicketActorType {
+  RESIDENT
+  STAFF
+  SYSTEM
+}
+
+enum SlaEventType {
+  RESPONSE_DUE
+  RESOLUTION_DUE
+  RESPONSE_BREACHED
+  RESOLUTION_BREACHED
+  PAUSED
+  RESUMED
+}
+
+enum NotificationChannel {
+  PUSH
+  EMAIL
+  SMS
+  ZALO_ZNS
+}
+
+enum NotificationPriority {
+  CRITICAL
+  BULK
+}
+
+enum CampaignStatus {
+  QUEUED
+  PROCESSING
+  COMPLETED
+  PARTIAL_FAILED
+  FAILED
+  CANCELLED
+}
+
+enum DeliveryStatus {
+  PENDING
+  SENT
+  DELIVERED
+  FAILED
+  RETRYING
+  SKIPPED
+}
+
+enum TemplateStatus {
+  DRAFT
+  ACTIVE
+  ARCHIVED
+}
+
+model NewsFeed {
+  id          String         @id @default(uuid()) @db.Uuid
+  projectId   String         @db.Uuid
+  buildingId  String?        @db.Uuid
+  type        NewsFeedType
+  status      NewsFeedStatus @default(DRAFT)
+  title       String         @db.VarChar(300)
+  body        String         @db.VarChar(20000)
+  publishedAt DateTime?
+  expiresAt   DateTime?
+  createdBy   String         @db.Uuid
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+  version     Int            @default(1)
+
+  @@index([projectId, buildingId, status, publishedAt])
+  @@index([projectId, type, status, publishedAt])
+  @@map("news_feed")
+}
+
+model Ticket {
+  id                   String         @id @default(uuid()) @db.Uuid
+  projectId            String         @db.Uuid
+  buildingId           String?        @db.Uuid
+  apartmentId          String?        @db.Uuid
+  residentId           String         @db.Uuid
+  assignedDepartmentId String?        @db.Uuid
+  assignedTo           String?        @db.Uuid
+  type                 TicketType
+  priority             TicketPriority @default(NORMAL)
+  status               TicketStatus   @default(OPEN)
+  subject              String         @db.VarChar(300)
+  description          String         @db.VarChar(10000)
+  firstResponseDueAt   DateTime
+  resolutionDueAt      DateTime
+  firstRespondedAt     DateTime?
+  resolvedAt           DateTime?
+  closedAt             DateTime?
+  satisfactionScore    Decimal?       @db.Decimal(4, 2)
+  satisfactionComment  String?        @db.VarChar(2000)
+  sourceEventId        String?        @db.VarChar(160)
+  createdAt            DateTime       @default(now())
+  updatedAt            DateTime       @updatedAt
+  version              Int            @default(1)
+
+  history   TicketHistory[]
+  slaEvents TicketSlaEvent[]
+
+  @@index([projectId, status, priority, createdAt])
+  @@index([projectId, assignedTo, status])
+  @@index([projectId, resolutionDueAt, status])
+  @@map("support_tickets")
+}
+
+model TicketHistory {
+  id            String          @id @default(uuid()) @db.Uuid
+  ticketId      String          @db.Uuid
+  projectId     String          @db.Uuid
+  fromStatus    TicketStatus?
+  toStatus      TicketStatus
+  actorId       String          @db.Uuid
+  actorType     TicketActorType
+  comment       String?         @db.VarChar(4000)
+  correlationId String          @db.VarChar(160)
+  occurredAt    DateTime        @default(now())
+
+  ticket Ticket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+
+  @@index([ticketId, occurredAt])
+  @@map("ticket_history")
+}
+
+model TicketSlaEvent {
+  id             String       @id @default(uuid()) @db.Uuid
+  ticketId       String       @db.Uuid
+  projectId      String       @db.Uuid
+  type           SlaEventType
+  dueAt          DateTime
+  breachedAt     DateTime?
+  acknowledgedAt DateTime?
+  createdAt      DateTime     @default(now())
+
+  ticket Ticket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+
+  @@index([projectId, type, dueAt, breachedAt])
+  @@map("ticket_sla_events")
+}
+
+model NotificationTemplate {
+  id        String              @id @default(uuid()) @db.Uuid
+  projectId String?             @db.Uuid
+  code      String              @db.VarChar(120)
+  channel   NotificationChannel
+  locale    String              @db.VarChar(16)
+  subject   String?             @db.VarChar(300)
+  body      String              @db.VarChar(20000)
+  status    TemplateStatus      @default(DRAFT)
+  version   Int                 @default(1)
+  createdBy String              @db.Uuid
+  createdAt DateTime            @default(now())
+  updatedAt DateTime            @updatedAt
+
+  @@unique([projectId, code, channel, locale, version])
+  @@index([projectId, code, channel, status])
+  @@map("notification_templates")
+}
+
+model NotificationCampaign {
+  id              String                @id @default(uuid()) @db.Uuid
+  projectId       String                @db.Uuid
+  templateId      String?               @db.Uuid
+  priority        NotificationPriority
+  status          CampaignStatus        @default(QUEUED)
+  title           String                @db.VarChar(300)
+  payload         Json
+  targetFilter    Json
+  channels        NotificationChannel[]
+  totalRecipients Int                   @default(0)
+  sentCount       Int                   @default(0)
+  failedCount     Int                   @default(0)
+  createdBy       String                @db.Uuid
+  createdAt       DateTime              @default(now())
+  startedAt       DateTime?
+  completedAt     DateTime?
+
+  deliveryLogs DeliveryLog[]
+
+  @@index([projectId, priority, status, createdAt])
+  @@map("notification_campaigns")
+}
+
+model DeviceEndpoint {
+  id          String              @id @default(uuid()) @db.Uuid
+  projectId   String              @db.Uuid
+  userId      String              @db.Uuid
+  apartmentId String?             @db.Uuid
+  channel     NotificationChannel
+  address     String              @db.VarChar(1000)
+  isActive    Boolean             @default(true)
+  lastSeenAt  DateTime            @default(now())
+
+  deliveryLogs DeliveryLog[]
+
+  @@unique([channel, address])
+  @@index([projectId, userId, channel, isActive])
+  @@index([projectId, apartmentId, channel, isActive])
+  @@map("notification_device_endpoints")
+}
+
+model DeliveryLog {
+  id            String              @id @default(uuid()) @db.Uuid
+  campaignId    String              @db.Uuid
+  endpointId    String?             @db.Uuid
+  projectId     String              @db.Uuid
+  channel       NotificationChannel
+  status        DeliveryStatus      @default(PENDING)
+  provider      String              @db.VarChar(80)
+  providerRef   String?             @db.VarChar(240)
+  attempt       Int                 @default(0)
+  nextAttemptAt DateTime            @default(now())
+  sentAt        DateTime?
+  deliveredAt   DateTime?
+  failedAt      DateTime?
+  errorCode     String?             @db.VarChar(160)
+  errorMessage  String?             @db.VarChar(2000)
+  createdAt     DateTime            @default(now())
+  updatedAt     DateTime            @updatedAt
+
+  campaign NotificationCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  endpoint DeviceEndpoint?      @relation(fields: [endpointId], references: [id], onDelete: SetNull)
+
+  @@unique([campaignId, endpointId, channel])
+  @@index([projectId, status, nextAttemptAt])
+  @@index([campaignId, status])
+  @@map("notification_delivery_logs")
+}
+
+model InboxEvent {
+  id          String    @id @default(uuid()) @db.Uuid
+  eventId     String    @unique @db.VarChar(160)
+  eventType   String    @db.VarChar(160)
+  status      String    @default("PROCESSED") @db.VarChar(32)
+  attempts    Int       @default(0)
+  receivedAt  DateTime  @default(now())
+  processedAt DateTime?
+  lastError   String?   @db.VarChar(2000)
+
+  @@index([status, receivedAt])
+  @@map("notification_inbox_events")
+}
