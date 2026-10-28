@@ -1,0 +1,474 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("RESIDENT_MARKETPLACE_DATABASE_URL")
+}
+
+enum ShopStatus {
+  DRAFT
+  ACTIVE
+  INACTIVE
+  ARCHIVED
+}
+
+enum ProductStatus {
+  DRAFT
+  ACTIVE
+  INACTIVE
+  ARCHIVED
+}
+
+enum PartnerStatus {
+  ACTIVE
+  SUSPENDED
+  INACTIVE
+}
+
+enum TechnicianStatus {
+  ACTIVE
+  BUSY
+  SUSPENDED
+  INACTIVE
+}
+
+enum AvailabilityStatus {
+  AVAILABLE
+  BLOCKED
+  CANCELLED
+}
+
+enum HomeServiceCategory {
+  APARTMENT_CLEANING
+  REPAIR_MAINTENANCE
+  HEALTHCARE
+  ITEM_CLEANING
+  INTERIOR_EXTERIOR_CLEANING
+  HVAC
+}
+
+enum CatalogStatus {
+  DRAFT
+  ACTIVE
+  INACTIVE
+  ARCHIVED
+}
+
+enum UtilityServiceType {
+  ELECTRICITY
+  WATER
+  INTERNET
+  TELECOM
+  TELEVISION
+}
+
+enum ContractStatus {
+  DRAFT
+  ACTIVE
+  SUSPENDED
+  EXPIRED
+  TERMINATED
+}
+
+enum UtilityConnectionStatus {
+  DISCONNECTED
+  PENDING
+  CONNECTED
+  FAILED
+}
+
+enum MarketplaceOrderType {
+  INTERNAL_SHOP
+  HOME_SERVICE
+}
+
+enum ServiceOrderStatus {
+  CREATED
+  PAYMENT_PENDING
+  PAID
+  PARTNER_ASSIGNED
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+  REFUNDED
+}
+
+enum AssignmentType {
+  SHOP_PARTNER
+  TECHNICIAN
+}
+
+enum AssignmentStatus {
+  OFFERED
+  ACCEPTED
+  DECLINED
+  EXPIRED
+  CANCELLED
+  COMPLETED
+}
+
+enum SagaStatus {
+  CREATED
+  PAYMENT_PENDING
+  PAYMENT_CONFIRMED
+  DISPATCHING
+  DISPATCHED
+  COMPENSATING
+  COMPENSATED
+  FAILED
+}
+
+enum OutboxStatus {
+  PENDING
+  PUBLISHED
+  FAILED
+}
+
+model UtilityContract {
+  id                    String                  @id @default(uuid()) @db.Uuid
+  projectId             String                  @db.Uuid
+  apartmentId           String                  @db.Uuid
+  residentId            String?                 @db.Uuid
+  serviceType           UtilityServiceType
+  providerName          String                  @db.VarChar(200)
+  contractNumber        String                  @db.VarChar(128)
+  status                ContractStatus          @default(DRAFT)
+  connectionStatus      UtilityConnectionStatus @default(DISCONNECTED)
+  accountReference      String                  @db.VarChar(160)
+  startsAt              DateTime
+  endsAt                DateTime?
+  connectionRequestedAt DateTime?
+  connectedAt           DateTime?
+  metadata              Json                    @default("{}")
+  createdAt             DateTime                @default(now())
+  updatedAt             DateTime                @updatedAt
+
+  @@unique([projectId, contractNumber])
+  @@index([projectId, apartmentId, serviceType, status])
+  @@index([projectId, residentId, status])
+  @@map("utility_contracts")
+}
+
+model ServicePartner {
+  id        String        @id @default(uuid()) @db.Uuid
+  projectId String        @db.Uuid
+  name      String        @db.VarChar(200)
+  status    PartnerStatus @default(ACTIVE)
+  phone     String?       @db.VarChar(32)
+  metadata  Json          @default("{}")
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+
+  shops       InternalShop[]
+  services    HomeServiceCatalog[]
+  technicians TechnicianProfile[]
+  assignments TechnicianAssignment[]
+
+  @@unique([projectId, name])
+  @@index([projectId, status])
+  @@map("service_partners")
+}
+
+model InternalShop {
+  id          String     @id @default(uuid()) @db.Uuid
+  projectId   String     @db.Uuid
+  buildingId  String?    @db.Uuid
+  partnerId   String?    @db.Uuid
+  name        String     @db.VarChar(200)
+  slug        String     @db.VarChar(120)
+  description String?    @db.VarChar(2000)
+  status      ShopStatus @default(DRAFT)
+  opensAt     String?    @db.VarChar(5)
+  closesAt    String?    @db.VarChar(5)
+  metadata    Json       @default("{}")
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  partner  ServicePartner? @relation(fields: [partnerId], references: [id], onDelete: Restrict)
+  products Product[]
+  orders   ServiceOrder[]
+
+  @@unique([projectId, slug])
+  @@index([projectId, buildingId, status])
+  @@map("internal_shops")
+}
+
+model Product {
+  id              String        @id @default(uuid()) @db.Uuid
+  projectId       String        @db.Uuid
+  shopId          String        @db.Uuid
+  sku             String        @db.VarChar(96)
+  name            String        @db.VarChar(240)
+  description     String?       @db.VarChar(4000)
+  currencyCode    String        @db.Char(3)
+  priceMinorUnits BigInt
+  status          ProductStatus @default(DRAFT)
+  metadata        Json          @default("{}")
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  shop      InternalShop       @relation(fields: [shopId], references: [id], onDelete: Restrict)
+  inventory ProductInventory[]
+  items     ServiceOrderItem[]
+
+  @@unique([shopId, sku])
+  @@index([projectId, status, shopId])
+  @@map("products")
+}
+
+model ProductInventory {
+  id                String   @id @default(uuid()) @db.Uuid
+  productId         String   @db.Uuid
+  buildingId        String   @db.Uuid
+  availableQuantity Int
+  reservedQuantity  Int      @default(0)
+  version           Int      @default(1)
+  updatedAt         DateTime @updatedAt
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([productId, buildingId])
+  @@index([buildingId, productId])
+  @@map("product_inventories")
+}
+
+model HomeServiceCatalog {
+  id                   String              @id @default(uuid()) @db.Uuid
+  projectId            String              @db.Uuid
+  partnerId            String?             @db.Uuid
+  code                 String              @db.VarChar(96)
+  name                 String              @db.VarChar(240)
+  category             HomeServiceCategory
+  description          String?             @db.VarChar(4000)
+  currencyCode         String              @db.Char(3)
+  basePriceMinorUnits  BigInt
+  durationMinutes      Int
+  requiresTechnician   Boolean             @default(true)
+  requiredSkills       String[]            @default([])
+  availableBuildingIds String[]            @default([])
+  status               CatalogStatus       @default(DRAFT)
+  metadata             Json                @default("{}")
+  createdAt            DateTime            @default(now())
+  updatedAt            DateTime            @updatedAt
+
+  partner ServicePartner?    @relation(fields: [partnerId], references: [id], onDelete: Restrict)
+  orders  ServiceOrder[]
+  items   ServiceOrderItem[]
+
+  @@unique([projectId, code])
+  @@index([projectId, category, status])
+  @@index([projectId, status, partnerId])
+  @@map("home_service_catalog")
+}
+
+model TechnicianProfile {
+  id                String           @id @default(uuid()) @db.Uuid
+  projectId         String           @db.Uuid
+  partnerId         String           @db.Uuid
+  displayName       String           @db.VarChar(200)
+  phone             String?          @db.VarChar(32)
+  skills            String[]         @default([])
+  buildingIds       String[]         @default([])
+  rating            Decimal          @default(0) @db.Decimal(4, 2)
+  currentLoad       Int              @default(0)
+  maxConcurrentJobs Int              @default(5)
+  status            TechnicianStatus @default(ACTIVE)
+  version           Int              @default(1)
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+
+  partner      ServicePartner           @relation(fields: [partnerId], references: [id], onDelete: Restrict)
+  availability TechnicianAvailability[]
+  assignments  TechnicianAssignment[]
+
+  @@index([projectId, status, currentLoad, rating])
+  @@index([projectId, partnerId, status])
+  @@map("technician_profiles")
+}
+
+model TechnicianAvailability {
+  id           String             @id @default(uuid()) @db.Uuid
+  technicianId String             @db.Uuid
+  buildingId   String             @db.Uuid
+  startsAt     DateTime
+  endsAt       DateTime
+  status       AvailabilityStatus @default(AVAILABLE)
+  createdAt    DateTime           @default(now())
+
+  technician TechnicianProfile @relation(fields: [technicianId], references: [id], onDelete: Cascade)
+
+  @@index([buildingId, startsAt, endsAt, status])
+  @@index([technicianId, startsAt, endsAt])
+  @@map("technician_availability")
+}
+
+model ServiceOrder {
+  id                   String               @id @default(uuid()) @db.Uuid
+  projectId            String               @db.Uuid
+  apartmentId          String               @db.Uuid
+  residentId           String               @db.Uuid
+  type                 MarketplaceOrderType
+  status               ServiceOrderStatus   @default(CREATED)
+  shopId               String?              @db.Uuid
+  serviceCatalogId     String?              @db.Uuid
+  currencyCode         String               @db.Char(3)
+  subtotalMinorUnits   BigInt
+  serviceFeeMinorUnits BigInt               @default(0)
+  totalMinorUnits      BigInt
+  scheduledStart       DateTime?
+  scheduledEnd         DateTime?
+  addressSnapshot      Json                 @default("{}")
+  notes                String?              @db.VarChar(4000)
+  paymentIntentId      String?              @db.VarChar(160)
+  idempotencyKey       String               @db.VarChar(160)
+  idempotencyHash      String               @db.Char(64)
+  version              Int                  @default(1)
+  paidAt               DateTime?
+  completedAt          DateTime?
+  cancelledAt          DateTime?
+  refundedAt           DateTime?
+  cancellationReason   String?              @db.VarChar(1000)
+  createdAt            DateTime             @default(now())
+  updatedAt            DateTime             @updatedAt
+
+  shop           InternalShop?          @relation(fields: [shopId], references: [id], onDelete: Restrict)
+  serviceCatalog HomeServiceCatalog?    @relation(fields: [serviceCatalogId], references: [id], onDelete: Restrict)
+  items          ServiceOrderItem[]
+  assignments    TechnicianAssignment[]
+  transitions    OrderTransition[]
+  saga           PaymentSaga?
+
+  @@unique([projectId, idempotencyKey])
+  @@index([projectId, apartmentId, status, createdAt])
+  @@index([projectId, residentId, status, createdAt])
+  @@index([projectId, status, scheduledStart])
+  @@map("service_orders")
+}
+
+model ServiceOrderItem {
+  id                  String  @id @default(uuid()) @db.Uuid
+  orderId             String  @db.Uuid
+  productId           String? @db.Uuid
+  serviceCatalogId    String? @db.Uuid
+  descriptionSnapshot String  @db.VarChar(500)
+  skuSnapshot         String? @db.VarChar(96)
+  quantity            Int
+  unitPriceMinorUnits BigInt
+  totalMinorUnits     BigInt
+  metadataSnapshot    Json    @default("{}")
+
+  order          ServiceOrder        @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product        Product?            @relation(fields: [productId], references: [id], onDelete: Restrict)
+  serviceCatalog HomeServiceCatalog? @relation(fields: [serviceCatalogId], references: [id], onDelete: Restrict)
+
+  @@index([orderId])
+  @@index([productId])
+  @@index([serviceCatalogId])
+  @@map("service_order_items")
+}
+
+model TechnicianAssignment {
+  id           String           @id @default(uuid()) @db.Uuid
+  orderId      String           @db.Uuid
+  projectId    String           @db.Uuid
+  partnerId    String           @db.Uuid
+  technicianId String?          @db.Uuid
+  type         AssignmentType
+  status       AssignmentStatus @default(OFFERED)
+  score        Decimal          @default(0) @db.Decimal(10, 4)
+  offeredAt    DateTime         @default(now())
+  respondedAt  DateTime?
+  expiresAt    DateTime?
+  reason       String?          @db.VarChar(1000)
+  version      Int              @default(1)
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
+
+  order      ServiceOrder       @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  partner    ServicePartner     @relation(fields: [partnerId], references: [id], onDelete: Restrict)
+  technician TechnicianProfile? @relation(fields: [technicianId], references: [id], onDelete: Restrict)
+
+  @@unique([orderId, technicianId])
+  @@index([projectId, status, offeredAt])
+  @@index([technicianId, status])
+  @@map("technician_assignments")
+}
+
+model OrderTransition {
+  id            String              @id @default(uuid()) @db.Uuid
+  orderId       String              @db.Uuid
+  projectId     String              @db.Uuid
+  fromStatus    ServiceOrderStatus?
+  toStatus      ServiceOrderStatus
+  actorId       String              @db.Uuid
+  reason        String?             @db.VarChar(1000)
+  correlationId String              @db.VarChar(160)
+  occurredAt    DateTime            @default(now())
+
+  order ServiceOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([projectId, orderId, occurredAt])
+  @@index([projectId, toStatus, occurredAt])
+  @@map("order_transitions")
+}
+
+model PaymentSaga {
+  id              String     @id @default(uuid()) @db.Uuid
+  orderId         String     @unique @db.Uuid
+  projectId       String     @db.Uuid
+  status          SagaStatus @default(CREATED)
+  paymentIntentId String?    @db.VarChar(160)
+  refundId        String?    @db.VarChar(160)
+  currentStep     String     @db.VarChar(96)
+  lastError       String?    @db.VarChar(2000)
+  attempts        Int        @default(0)
+  nextAttemptAt   DateTime   @default(now())
+  version         Int        @default(1)
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+
+  order ServiceOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([projectId, status, updatedAt])
+  @@map("payment_sagas")
+}
+
+model InboxMessage {
+  id          String    @id @default(uuid()) @db.Uuid
+  eventId     String    @unique @db.VarChar(160)
+  eventType   String    @db.VarChar(160)
+  status      String    @default("PROCESSED") @db.VarChar(32)
+  attempts    Int       @default(0)
+  receivedAt  DateTime  @default(now())
+  processedAt DateTime?
+  lastError   String?   @db.VarChar(2000)
+
+  @@index([status, receivedAt])
+  @@map("inbox_messages")
+}
+
+model OutboxEvent {
+  id            String       @id @default(uuid()) @db.Uuid
+  projectId     String?      @db.Uuid
+  eventId       String       @unique @db.VarChar(160)
+  topic         String       @db.VarChar(200)
+  eventType     String       @db.VarChar(160)
+  aggregateType String       @db.VarChar(96)
+  aggregateId   String       @db.VarChar(160)
+  payload       Json
+  headers       Json         @default("{}")
+  status        OutboxStatus @default(PENDING)
+  attempts      Int          @default(0)
+  occurredAt    DateTime     @default(now())
+  nextAttemptAt DateTime     @default(now())
+  publishedAt   DateTime?
+  leasedUntil   DateTime?
+  leaseOwner    String?      @db.VarChar(128)
+  lastError     String?      @db.VarChar(2000)
+
+  @@index([status, nextAttemptAt, leasedUntil])
+  @@index([projectId, occurredAt])
+  @@map("outbox_events")
+}
