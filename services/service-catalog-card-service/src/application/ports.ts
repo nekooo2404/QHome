@@ -20,9 +20,9 @@ export interface SmartCardRecord {
 
 export interface CardRepository {
   issue(input: { projectId: string; residentId: string; apartmentId?: string; type: SmartCardRecord['type']; chipUid: string; externalNumber: string; expiresAt?: Date }): Promise<SmartCardRecord>;
-  block(cardId: string, reason: NonNullable<SmartCardRecord['blockReason']>): Promise<SmartCardRecord>;
-  unblock(cardId: string): Promise<SmartCardRecord>;
-  revoke(cardId: string): Promise<SmartCardRecord>;
+  block(projectId: string, cardId: string, reason: NonNullable<SmartCardRecord['blockReason']>): Promise<SmartCardRecord>;
+  unblock(projectId: string, cardId: string): Promise<SmartCardRecord>;
+  revoke(projectId: string, cardId: string): Promise<SmartCardRecord>;
   blockActiveCardsByResident(projectId: string, residentId: string, reason: NonNullable<SmartCardRecord['blockReason']>): Promise<number>;
 }
 
@@ -46,9 +46,9 @@ export interface PricingApplicationService {
 
 export interface CardLifecycleService {
   issue(input: Parameters<CardRepository['issue']>[0]): Promise<SmartCardRecord>;
-  block(cardId: string, reason: NonNullable<SmartCardRecord['blockReason']>): Promise<SmartCardRecord>;
-  unblock(cardId: string): Promise<SmartCardRecord>;
-  revoke(cardId: string): Promise<SmartCardRecord>;
+  block(projectId: string, cardId: string, reason: NonNullable<SmartCardRecord['blockReason']>): Promise<SmartCardRecord>;
+  unblock(projectId: string, cardId: string): Promise<SmartCardRecord>;
+  revoke(projectId: string, cardId: string): Promise<SmartCardRecord>;
   handleDebtOverdue(event: { eventId: string; projectId: string; residentId: string }): Promise<number>;
   handleDebtOverdueWithRetry(event: { eventId: string; projectId: string; residentId: string }, attempt?: number): Promise<void>;
 }

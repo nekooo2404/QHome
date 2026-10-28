@@ -10,14 +10,14 @@ import {
 
 const ZERO = new Decimal(0);
 const ONE = new Decimal(1);
-const MS_PER_DAY = 86_400_000;
+const VN_TIME_ZONE = 'Asia/Ho_Chi_Minh';
 
 export class PricingCalculationEngine {
   calculate(plan: PricingPlanSnapshot, context: PricingCalculationContext): PricingCalculationResult {
     this.validatePlan(plan);
     this.validateContext(context);
     const base = this.calculateBeforeProration(plan, context);
-    const prorate = this.prorationFactor(context);
+    const prorate = plan.formulaType === 'TIERED' ? ONE : this.prorationFactor(context);
     const net = base.net.times(prorate);
     const vat = base.vat.times(prorate);
     const environmentalFee = base.environmental.times(prorate);
@@ -84,11 +84,17 @@ export class PricingCalculationEngine {
   }
 
   private dayCount(start: Date, end: Date): Decimal {
-    const startUtc = Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), start.getUTCDate());
-    const endUtc = Date.UTC(end.getUTCFullYear(), end.getUTCMonth(), end.getUTCDate());
-    const days = Math.floor((endUtc - startUtc) / MS_PER_DAY) + 1;
+    const startDate = this.localCalendarDate(start);
+    const endDate = this.localCalendarDate(end);
+    const days = Math.floor((Date.UTC(endDate.year, endDate.month - 1, endDate.day) - Date.UTC(startDate.year, startDate.month - 1, startDate.day)) / 86_400_000) + 1;
     if (days <= 0) throw new Error('Date range must be positive');
     return new Decimal(String(days));
+  }
+
+  private localCalendarDate(value: Date): { year: number; month: number; day: number } {
+    const parts = new Intl.DateTimeFormat('en-CA', { timeZone: VN_TIME_ZONE, year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(value);
+    const get = (type: string) => Number(parts.find((part) => part.type === type)?.value);
+    return { year: get('year'), month: get('month'), day: get('day') };
   }
 
   private tax(net: Decimal, vatRate: Decimal, environmentalFeeRate: Decimal) {

@@ -2,6 +2,7 @@ import { Controller } from '@nestjs/common';
 import { Ctx, GrpcMethod, RpcException } from '@nestjs/microservices';
 import { status } from '@grpc/grpc-js';
 import { getGrpcRequestContext, GrpcCall } from '../../../../../libs/common/src/base-microservice';
+import { isStaffContext } from '../../../../../libs/common/src/context-proof';
 import { CardLifecycleServiceImpl } from '../../application/card-lifecycle.service';
 import { PricingApplicationServiceImpl } from '../../application/pricing.application.service';
 import { decimal } from '../../domain/pricing.types';
@@ -40,22 +41,26 @@ export class ServiceCatalogCardGrpcController {
 
   @GrpcMethod('ServiceCatalogCardService', 'IssueCard')
   async issueCard(request: IssueRequest, @Ctx() call: GrpcCall) {
-    getGrpcRequestContext(call);
-    const card = await this.cards.issue({ projectId: this.required(request.projectId, 'project_id'), residentId: this.required(request.residentId, 'resident_id'), apartmentId: request.apartmentId, type: this.enum(request.type, ['ELEVATOR', 'PARKING', 'APARTMENT_ACCESS'], 'type') as 'ELEVATOR' | 'PARKING' | 'APARTMENT_ACCESS', chipUid: this.required(request.chipUid, 'chip_uid'), externalNumber: this.required(request.externalNumber, 'external_number'), expiresAt: request.expiresAt ? this.date(request.expiresAt, 'expires_at') : undefined });
+    const context = getGrpcRequestContext(call);
+    if (!isStaffContext(context)) throw new RpcException({ code: status.PERMISSION_DENIED, message: 'Staff or management role is required' });
+    if (request.projectId !== context.tenantId) throw new RpcException({ code: status.PERMISSION_DENIED, message: 'Cross-tenant card issuance denied' });
+    const card = await this.cards.issue({ projectId: context.tenantId, residentId: this.required(request.residentId, 'resident_id'), apartmentId: request.apartmentId, type: this.enum(request.type, ['ELEVATOR', 'PARKING', 'APARTMENT_ACCESS'], 'type') as 'ELEVATOR' | 'PARKING' | 'APARTMENT_ACCESS', chipUid: this.required(request.chipUid, 'chip_uid'), externalNumber: this.required(request.externalNumber, 'external_number'), expiresAt: request.expiresAt ? this.date(request.expiresAt, 'expires_at') : undefined });
     return this.cardResponse(card);
   }
 
   @GrpcMethod('ServiceCatalogCardService', 'BlockCard')
   async blockCard(request: CardRequest, @Ctx() call: GrpcCall) {
-    getGrpcRequestContext(call);
-    const card = await this.cards.block(this.required(request.cardId, 'card_id'), this.enum(request.reason, ['OVERDUE_DEBT', 'LOST', 'SECURITY_INCIDENT', 'ADMINISTRATIVE'], 'reason') as 'OVERDUE_DEBT' | 'LOST' | 'SECURITY_INCIDENT' | 'ADMINISTRATIVE');
+    const context = getGrpcRequestContext(call);
+    if (!isStaffContext(context)) throw new RpcException({ code: status.PERMISSION_DENIED, message: 'Staff or management role is required' });
+    const card = await this.cards.block(context.tenantId, this.required(request.cardId, 'card_id'), this.enum(request.reason, ['OVERDUE_DEBT', 'LOST', 'SECURITY_INCIDENT', 'ADMINISTRATIVE'], 'reason') as 'OVERDUE_DEBT' | 'LOST' | 'SECURITY_INCIDENT' | 'ADMINISTRATIVE');
     return this.cardResponse(card);
   }
 
   @GrpcMethod('ServiceCatalogCardService', 'UnblockCard')
   async unblockCard(request: CardRequest, @Ctx() call: GrpcCall) {
-    getGrpcRequestContext(call);
-    return this.cardResponse(await this.cards.unblock(this.required(request.cardId, 'card_id')));
+    const context = getGrpcRequestContext(call);
+    if (!isStaffContext(context)) throw new RpcException({ code: status.PERMISSION_DENIED, message: 'Staff or management role is required' });
+    return this.cardResponse(await this.cards.unblock(context.tenantId, this.required(request.cardId, 'card_id')));
   }
 
   private cardResponse(card: Awaited<ReturnType<CardLifecycleServiceImpl['issue']>>) {

@@ -12,16 +12,16 @@ export class CardLifecycleServiceImpl implements CardLifecycleService {
     return this.repository.issue(input);
   }
 
-  block(cardId: string, reason: NonNullable<SmartCardRecord['blockReason']>): Promise<SmartCardRecord> {
-    return this.repository.block(cardId, reason);
+  block(projectId: string, cardId: string, reason: NonNullable<SmartCardRecord['blockReason']>): Promise<SmartCardRecord> {
+    return this.repository.block(projectId, cardId, reason);
   }
 
-  unblock(cardId: string): Promise<SmartCardRecord> {
-    return this.repository.unblock(cardId);
+  unblock(projectId: string, cardId: string): Promise<SmartCardRecord> {
+    return this.repository.unblock(projectId, cardId);
   }
 
-  revoke(cardId: string): Promise<SmartCardRecord> {
-    return this.repository.revoke(cardId);
+  revoke(projectId: string, cardId: string): Promise<SmartCardRecord> {
+    return this.repository.revoke(projectId, cardId);
   }
 
   async handleDebtOverdue(event: { eventId: string; projectId: string; residentId: string }): Promise<number> {

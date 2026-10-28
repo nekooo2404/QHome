@@ -3,6 +3,7 @@ import Decimal from 'decimal.js';
 import { Prisma, PrismaClient } from '@prisma/client';
 import { PricingPlanRepository, CardRepository, InboxRepository, SmartCardRecord } from '../../application/ports';
 import { PricingPlanSnapshot } from '../../domain/pricing.types';
+import { assertCardTransition } from '../../domain/card.state-machine';
 
 function dec(value: unknown): Decimal { return new Decimal(String(value)); }
 
@@ -42,27 +43,39 @@ export class PrismaServiceCatalogRepository implements PricingPlanRepository, Ca
     });
   }
 
-  async block(cardId: string, reason: NonNullable<SmartCardRecord['blockReason']>): Promise<SmartCardRecord> {
+  async block(projectId: string, cardId: string, reason: NonNullable<SmartCardRecord['blockReason']>): Promise<SmartCardRecord> {
     return this.prisma.$transaction(async (tx) => {
+      const rows = await tx.$queryRawUnsafe<Array<{ id: string; project_id: string; status: string }>>('SELECT id, project_id, status FROM smart_cards WHERE id = $1::uuid AND project_id = $2::uuid FOR UPDATE', cardId, projectId);
+      if (!rows[0] || rows[0].status !== 'ACTIVE') throw new Error('Only an active card can be blocked');
+      assertCardTransition(rows[0].status as SmartCardRecord['status'], 'BLOCKED');
       const card = await tx.smartCard.update({ where: { id: cardId }, data: { status: 'BLOCKED', blockReason: reason, blockedAt: new Date(), version: { increment: 1 } } });
       await tx.outboxEvent.create({ data: outbox({ projectId: card.projectId, eventType: 'service_catalog.card.blocked.v1', aggregateType: 'smart_card', aggregateId: card.id, payload: { cardId: card.id, reason } }) });
       return mapCard(card);
     });
   }
 
-  async unblock(cardId: string): Promise<SmartCardRecord> {
+  async unblock(projectId: string, cardId: string): Promise<SmartCardRecord> {
     return this.prisma.$transaction(async (tx) => {
-      const card = await tx.smartCard.updateMany({ where: { id: cardId, status: 'BLOCKED' }, data: { status: 'ACTIVE', blockReason: null, blockedAt: null, version: { increment: 1 } } });
-      if (card.count !== 1) throw new Error('Card is not blocked or does not exist');
+      const rows = await tx.$queryRawUnsafe<Array<{ id: string; project_id: string; status: string }>>('SELECT id, project_id, status FROM smart_cards WHERE id = $1::uuid AND project_id = $2::uuid FOR UPDATE', cardId, projectId);
+      if (!rows[0] || rows[0].status !== 'BLOCKED') throw new Error('Card is not blocked or does not exist');
+      const expiry = await tx.smartCard.findUnique({ where: { id: cardId }, select: { expiresAt: true, blockReason: true } });
+      if (expiry?.expiresAt && expiry.expiresAt <= new Date()) throw new Error('Expired card cannot be unblocked');
+      if (expiry?.blockReason === 'OVERDUE_DEBT') throw new Error('Overdue-debt card requires debt settlement before unblock');
+      assertCardTransition(rows[0].status as SmartCardRecord['status'], 'ACTIVE');
+      const card = await tx.smartCard.updateMany({ where: { id: cardId, projectId, status: 'BLOCKED' }, data: { status: 'ACTIVE', blockReason: null, blockedAt: null, version: { increment: 1 } } });
+      if (card.count !== 1) throw new Error('Card state changed while unblocking');
       const updated = await tx.smartCard.findUniqueOrThrow({ where: { id: cardId } });
       await tx.outboxEvent.create({ data: outbox({ projectId: updated.projectId, eventType: 'service_catalog.card.unblocked.v1', aggregateType: 'smart_card', aggregateId: updated.id, payload: { cardId: updated.id } }) });
       return mapCard(updated);
     });
   }
 
-  async revoke(cardId: string): Promise<SmartCardRecord> {
+  async revoke(projectId: string, cardId: string): Promise<SmartCardRecord> {
     return this.prisma.$transaction(async (tx) => {
-      const card = await tx.smartCard.update({ where: { id: cardId }, data: { status: 'REVOKED', revokedAt: new Date(), version: { increment: 1 } } });
+      const rows = await tx.$queryRawUnsafe<Array<{ id: string; status: string; version: number }>>('SELECT id, status::text AS status, version FROM smart_cards WHERE id = $1::uuid AND project_id = $2::uuid FOR UPDATE', cardId, projectId);
+      if (!rows[0]) throw new Error('Card not found in project');
+      assertCardTransition(rows[0].status as SmartCardRecord['status'], 'REVOKED');
+      const card = await tx.smartCard.update({ where: { id: cardId, projectId }, data: { status: 'REVOKED', revokedAt: new Date(), version: { increment: 1 } } });
       await tx.outboxEvent.create({ data: outbox({ projectId: card.projectId, eventType: 'service_catalog.card.revoked.v1', aggregateType: 'smart_card', aggregateId: card.id, payload: { cardId: card.id } }) });
       return mapCard(card);
     });
@@ -79,12 +92,17 @@ export class PrismaServiceCatalogRepository implements PricingPlanRepository, Ca
   }
 
   async processOnce<T>(input: { eventId: string; eventType: string; handler: () => Promise<T> }): Promise<{ processed: boolean; result?: T }> {
-    try {
-      await this.prisma.inboxMessage.create({ data: { eventId: input.eventId, eventType: input.eventType, status: 'PROCESSING' } });
-    } catch (error) {
-      if ((error as { code?: string }).code === 'P2002') return { processed: false };
-      throw error;
-    }
+    const claimed = await this.prisma.$transaction(async (tx) => {
+      const rows = await tx.$queryRawUnsafe<Array<{ id: string; status: string }>>('SELECT id, status FROM inbox_messages WHERE event_id = $1 FOR UPDATE', input.eventId);
+      if (!rows[0]) {
+        await tx.inboxMessage.create({ data: { eventId: input.eventId, eventType: input.eventType, status: 'PROCESSING', attempts: 1 } });
+        return true;
+      }
+      if (rows[0].status === 'PROCESSED' || rows[0].status === 'COMPLETED' || rows[0].status === 'PROCESSING') return false;
+      await tx.inboxMessage.update({ where: { eventId: input.eventId }, data: { status: 'PROCESSING', attempts: { increment: 1 }, lastError: null } });
+      return true;
+    });
+    if (!claimed) return { processed: false };
     try {
       const result = await input.handler();
       await this.prisma.inboxMessage.update({ where: { eventId: input.eventId }, data: { status: 'PROCESSED', processedAt: new Date(), attempts: { increment: 1 } } });
