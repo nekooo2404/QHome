@@ -1,0 +1,47 @@
+syntax = "proto3";
+
+package qhome.iam.tenant.v1;
+
+import "common.proto";
+
+option java_multiple_files = true;
+option java_package = "com.qhome.iam.tenant.v1";
+option csharp_namespace = "QHome.Iam.Tenant.V1";
+option go_package = "github.com/qhome/backend/gen/qhome/iam/tenant/v1;iamtenantv1";
+
+service IamTenantService {
+  rpc VerifyPermission(VerifyPermissionRequest) returns (VerifyPermissionResponse);
+  rpc GetTenantContext(GetTenantContextRequest) returns (TenantContextResponse);
+}
+
+message VerifyPermissionRequest {
+  qhome.common.v1.RequestContext context = 1;
+  string user_id = 2;
+  string project_id = 3;
+  string permission = 4;
+  string building_id = 5;
+  string resource_type = 6;
+  string resource_id = 7;
+  string apartment_id = 8;
+}
+
+message VerifyPermissionResponse {
+  bool allowed = 1;
+  string reason = 2;
+  string authorization_version = 3;
+}
+
+message GetTenantContextRequest {
+  qhome.common.v1.RequestContext context = 1;
+  string user_id = 2;
+  string project_id = 3;
+}
+
+message TenantContextResponse {
+  string project_id = 1;
+  string user_id = 2;
+  repeated string building_ids = 3;
+  repeated string apartment_ids = 4;
+  repeated string permission_codes = 5;
+  string authorization_version = 6;
+}

@@ -1,0 +1,251 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("SERVICE_CATALOG_DATABASE_URL")
+}
+
+enum CatalogServiceType {
+  ELECTRICITY
+  WATER
+  PARKING
+  AMENITY
+  MANAGEMENT_FEE
+  COMMERCIAL_RENT
+  DEPOSIT
+}
+
+enum PricingFormulaType {
+  FIXED
+  AREA
+  HEADCOUNT
+  VEHICLE_COUNT
+  TIERED
+  PRORATED
+  PARKING_QUOTA
+}
+
+enum CatalogStatus {
+  DRAFT
+  ACTIVE
+  INACTIVE
+  ARCHIVED
+}
+
+enum ContractPartyType {
+  RESIDENT
+  PARTNER
+}
+
+enum ContractStatus {
+  DRAFT
+  ACTIVE
+  SUSPENDED
+  EXPIRED
+  TERMINATED
+}
+
+enum AmendmentStatus {
+  DRAFT
+  ACTIVE
+  SUPERSEDED
+  CANCELLED
+}
+
+enum SmartCardType {
+  ELEVATOR
+  PARKING
+  APARTMENT_ACCESS
+}
+
+enum SmartCardStatus {
+  PENDING
+  ACTIVE
+  BLOCKED
+  REVOKED
+  EXPIRED
+}
+
+enum CardBlockReason {
+  OVERDUE_DEBT
+  LOST
+  SECURITY_INCIDENT
+  ADMINISTRATIVE
+}
+
+model ServiceCatalogItem {
+  id               String             @id @default(uuid()) @db.Uuid
+  projectId        String             @db.Uuid
+  code             String             @db.VarChar(96)
+  name             String             @db.VarChar(200)
+  type             CatalogServiceType
+  unit             String             @db.VarChar(32)
+  currencyCode     String             @db.Char(3)
+  status           CatalogStatus      @default(DRAFT)
+  defaultFormula   PricingFormulaType
+  metadata         Json               @default("{}")
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+
+  pricingPlans PricingPlan[]
+  contracts    ServiceContract[]
+
+  @@unique([projectId, code])
+  @@index([projectId, status, type])
+  @@map("service_catalog_items")
+}
+
+model PricingPlan {
+  id             String            @id @default(uuid()) @db.Uuid
+  serviceId      String            @db.Uuid
+  version        Int
+  formulaType    PricingFormulaType
+  effectiveFrom  DateTime
+  effectiveTo    DateTime?
+  baseAmount     Decimal           @default(0) @db.Decimal(24, 12)
+  unitPrice      Decimal           @default(0) @db.Decimal(24, 12)
+  includedQty    Decimal           @default(0) @db.Decimal(24, 12)
+  vatRate        Decimal           @default(0) @db.Decimal(12, 9)
+  environmentalFeeRate Decimal      @default(0) @db.Decimal(12, 9)
+  currencyCode   String            @db.Char(3)
+  roundingScale  Int               @default(2)
+  roundingMode   String            @default("ROUND_HALF_UP") @db.VarChar(32)
+  metadata       Json              @default("{}")
+  createdAt      DateTime          @default(now())
+
+  service ServiceCatalogItem @relation(fields: [serviceId], references: [id], onDelete: Restrict)
+  tiers   PricingTier[]
+
+  @@unique([serviceId, version])
+  @@index([serviceId, effectiveFrom, effectiveTo])
+  @@map("pricing_plans")
+}
+
+model PricingTier {
+  id             String   @id @default(uuid()) @db.Uuid
+  planId         String   @db.Uuid
+  lowerBound     Decimal  @db.Decimal(24, 12)
+  upperBound     Decimal? @db.Decimal(24, 12)
+  unitPrice      Decimal  @db.Decimal(24, 12)
+  fixedCharge    Decimal  @default(0) @db.Decimal(24, 12)
+  vatRate        Decimal  @default(0) @db.Decimal(12, 9)
+  environmentalFeeRate Decimal @default(0) @db.Decimal(12, 9)
+  sequence       Int
+
+  plan PricingPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
+
+  @@unique([planId, sequence])
+  @@index([planId, lowerBound])
+  @@map("pricing_tiers")
+}
+
+model ServiceContract {
+  id             String            @id @default(uuid()) @db.Uuid
+  projectId      String            @db.Uuid
+  serviceId      String            @db.Uuid
+  partyType      ContractPartyType
+  partyId        String            @db.Uuid
+  apartmentId    String?           @db.Uuid
+  partnerId      String?           @db.Uuid
+  contractNumber String            @db.VarChar(96)
+  status         ContractStatus    @default(DRAFT)
+  signedAt       DateTime?
+  startsAt       DateTime
+  endsAt         DateTime?
+  autoRenew      Boolean           @default(false)
+  depositAmount  Decimal           @default(0) @db.Decimal(24, 12)
+  currencyCode   String            @db.Char(3)
+  metadata       Json              @default("{}")
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+
+  service    ServiceCatalogItem @relation(fields: [serviceId], references: [id], onDelete: Restrict)
+  amendments ContractAmendment[]
+
+  @@unique([projectId, contractNumber])
+  @@index([projectId, status, endsAt])
+  @@index([partyId, status, endsAt])
+  @@map("service_contracts")
+}
+
+model ContractAmendment {
+  id          String           @id @default(uuid()) @db.Uuid
+  contractId  String           @db.Uuid
+  amendmentNo Int
+  status      AmendmentStatus  @default(DRAFT)
+  effectiveAt DateTime
+  endsAt      DateTime?
+  payload     Json
+  createdAt   DateTime         @default(now())
+
+  contract ServiceContract @relation(fields: [contractId], references: [id], onDelete: Cascade)
+
+  @@unique([contractId, amendmentNo])
+  @@index([contractId, status, effectiveAt])
+  @@map("contract_amendments")
+}
+
+model SmartCard {
+  id             String          @id @default(uuid()) @db.Uuid
+  projectId      String          @db.Uuid
+  residentId     String          @db.Uuid
+  apartmentId    String?         @db.Uuid
+  type           SmartCardType
+  chipUid        String          @db.VarChar(128)
+  externalNumber String          @db.VarChar(96)
+  status         SmartCardStatus @default(PENDING)
+  blockReason    CardBlockReason?
+  blockedAt      DateTime?
+  expiresAt      DateTime?
+  issuedAt       DateTime        @default(now())
+  revokedAt      DateTime?
+  version        Int             @default(1)
+  metadata       Json            @default("{}")
+  updatedAt      DateTime        @updatedAt
+
+  @@unique([projectId, chipUid])
+  @@unique([projectId, externalNumber])
+  @@index([projectId, residentId, status])
+  @@index([projectId, apartmentId, type, status])
+  @@index([status, expiresAt])
+  @@map("smart_cards")
+}
+
+model InboxMessage {
+  id          String    @id @default(uuid()) @db.Uuid
+  eventId     String    @unique @db.VarChar(160)
+  eventType   String    @db.VarChar(160)
+  status      String    @default("PROCESSED") @db.VarChar(32)
+  attempts    Int       @default(0)
+  receivedAt  DateTime  @default(now())
+  processedAt DateTime?
+  lastError   String?   @db.VarChar(2000)
+
+  @@index([status, receivedAt])
+  @@map("inbox_messages")
+}
+
+model OutboxEvent {
+  id            String    @id @default(uuid()) @db.Uuid
+  projectId     String?   @db.Uuid
+  eventId       String    @unique @db.VarChar(160)
+  topic         String    @db.VarChar(200)
+  eventType     String    @db.VarChar(160)
+  aggregateType String    @db.VarChar(96)
+  aggregateId   String    @db.VarChar(128)
+  payload       Json
+  headers       Json      @default("{}")
+  occurredAt    DateTime  @default(now())
+  publishedAt   DateTime?
+  attempts      Int       @default(0)
+  nextAttemptAt DateTime  @default(now())
+  leasedUntil   DateTime?
+  leaseOwner    String?   @db.VarChar(128)
+  lastError     String?   @db.VarChar(2000)
+
+  @@index([publishedAt, nextAttemptAt, leasedUntil])
+  @@index([aggregateType, aggregateId, occurredAt])
+  @@map("outbox_events")
+}

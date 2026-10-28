@@ -1,0 +1,431 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("IAM_DATABASE_URL")
+}
+
+enum ProjectStatus {
+  ACTIVE
+  SUSPENDED
+  ARCHIVED
+}
+
+enum UserType {
+  BQL
+  RESIDENT
+}
+
+enum UserStatus {
+  PENDING
+  ACTIVE
+  SUSPENDED
+  LOCKED
+  DEACTIVATED
+}
+
+enum MembershipStatus {
+  ACTIVE
+  SUSPENDED
+  REVOKED
+}
+
+enum BuildingStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum RoleAssignmentSource {
+  DIRECT
+  DEPARTMENT
+}
+
+enum OverrideEffect {
+  ALLOW
+  DENY
+}
+
+enum ScopeType {
+  PROJECT
+  BUILDING
+}
+
+enum SessionStatus {
+  ACTIVE
+  REVOKED
+}
+
+enum SigningKeyStatus {
+  ACTIVE
+  VERIFY_ONLY
+  RETIRED
+}
+
+model Project {
+  id          String        @id @default(uuid()) @db.Uuid
+  code        String        @unique @db.VarChar(64)
+  name        String        @db.VarChar(200)
+  status      ProjectStatus @default(ACTIVE)
+  version     Int           @default(1)
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  buildings             Building[]
+  departments           Department[]
+  roles                 Role[]
+  memberships           ProjectMembership[]
+  roleAssignments       RoleAssignment[]
+  permissionOverrides   UserPermissionOverride[]
+  outboxEvents          OutboxEvent[]
+  auditEvents           AuditEvent[]
+
+  @@index([status])
+  @@map("projects")
+}
+
+model Building {
+  id          String         @id @default(uuid()) @db.Uuid
+  projectId   String         @db.Uuid
+  code        String         @db.VarChar(64)
+  name        String         @db.VarChar(200)
+  status      BuildingStatus @default(ACTIVE)
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+
+  project             Project                   @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  membershipScopes    ProjectMembershipScope[]
+  roleAssignmentScope RoleAssignmentScope[]
+  permissionOverrides UserPermissionOverride[]
+
+  @@unique([projectId, code])
+  @@index([projectId, status])
+  @@map("buildings")
+}
+
+model Department {
+  id          String   @id @default(uuid()) @db.Uuid
+  projectId   String   @db.Uuid
+  code        String   @db.VarChar(64)
+  name        String   @db.VarChar(200)
+  description String?  @db.VarChar(1000)
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  project       Project              @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  members       DepartmentMember[]
+  roleBindings  DepartmentRoleBinding[]
+
+  @@unique([projectId, code])
+  @@index([projectId, isActive])
+  @@map("departments")
+}
+
+model User {
+  id                 String                 @id @default(uuid()) @db.Uuid
+  emailNormalized    String                 @unique @db.VarChar(320)
+  displayName        String                 @db.VarChar(200)
+  userType           UserType
+  status             UserStatus             @default(PENDING)
+  passwordHash       String                 @db.VarChar(512)
+  failedLoginCount   Int                    @default(0)
+  lockedUntil        DateTime?
+  lastLoginAt        DateTime?
+  createdAt          DateTime               @default(now())
+  updatedAt          DateTime               @updatedAt
+
+  memberships        ProjectMembership[]
+  departmentMembers  DepartmentMember[]
+  roleAssignments    RoleAssignment[]
+  permissionOverrides UserPermissionOverride[]
+  sessions           AuthSession[]
+  refreshTokens      RefreshToken[]
+  refreshTokenFamilies RefreshTokenFamily[]
+  auditEvents        AuditEvent[]
+
+  @@index([status, userType])
+  @@map("users")
+}
+
+model ProjectMembership {
+  id          String           @id @default(uuid()) @db.Uuid
+  projectId   String           @db.Uuid
+  userId      String           @db.Uuid
+  status      MembershipStatus @default(ACTIVE)
+  apartmentId String?          @db.Uuid
+  joinedAt    DateTime         @default(now())
+  revokedAt   DateTime?
+  version     Int              @default(1)
+
+  project      Project                   @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  user         User                      @relation(fields: [userId], references: [id], onDelete: Restrict)
+  scopes       ProjectMembershipScope[]
+  sessions     AuthSession[]
+
+  @@unique([projectId, userId])
+  @@index([userId, status])
+  @@index([projectId, status])
+  @@map("project_memberships")
+}
+
+model ProjectMembershipScope {
+  id           String            @id @default(uuid()) @db.Uuid
+  membershipId String            @db.Uuid
+  buildingId   String            @db.Uuid
+  apartmentId  String?           @db.Uuid
+  scopeKey     String            @db.VarChar(180)
+  createdAt    DateTime          @default(now())
+
+  membership ProjectMembership @relation(fields: [membershipId], references: [id], onDelete: Cascade)
+  building   Building          @relation(fields: [buildingId], references: [id], onDelete: Restrict)
+
+  @@unique([membershipId, scopeKey])
+  @@index([buildingId])
+  @@map("project_membership_scopes")
+}
+
+model DepartmentMember {
+  id           String     @id @default(uuid()) @db.Uuid
+  departmentId String     @db.Uuid
+  userId       String     @db.Uuid
+  createdAt    DateTime   @default(now())
+  removedAt    DateTime?
+
+  department Department @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  user       User       @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  @@unique([departmentId, userId])
+  @@index([userId, removedAt])
+  @@map("department_members")
+}
+
+model Permission {
+  id          String       @id @default(uuid()) @db.Uuid
+  code        String       @unique @db.VarChar(160)
+  description String       @db.VarChar(500)
+  createdAt   DateTime     @default(now())
+
+  rolePermissions      RolePermission[]
+  permissionOverrides  UserPermissionOverride[]
+
+  @@map("permissions")
+}
+
+model Role {
+  id          String       @id @default(uuid()) @db.Uuid
+  projectId   String       @db.Uuid
+  code        String       @db.VarChar(96)
+  name        String       @db.VarChar(160)
+  description String?      @db.VarChar(500)
+  isSystem    Boolean      @default(false)
+  isActive    Boolean      @default(true)
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  project          Project                @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  permissions      RolePermission[]
+  departmentRoles  DepartmentRoleBinding[]
+  assignments      RoleAssignment[]
+
+  @@unique([projectId, code])
+  @@index([projectId, isActive])
+  @@map("roles")
+}
+
+model RolePermission {
+  roleId       String @db.Uuid
+  permissionId String @db.Uuid
+
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Restrict)
+
+  @@id([roleId, permissionId])
+  @@map("role_permissions")
+}
+
+model DepartmentRoleBinding {
+  departmentId String @db.Uuid
+  roleId       String @db.Uuid
+
+  department Department @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@id([departmentId, roleId])
+  @@map("department_role_bindings")
+}
+
+model RoleAssignment {
+  id           String               @id @default(uuid()) @db.Uuid
+  projectId    String               @db.Uuid
+  userId       String               @db.Uuid
+  roleId       String               @db.Uuid
+  departmentId String?              @db.Uuid
+  source       RoleAssignmentSource
+  createdAt    DateTime             @default(now())
+  revokedAt    DateTime?
+
+  project    Project              @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  user       User                 @relation(fields: [userId], references: [id], onDelete: Restrict)
+  role       Role                 @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  scopes     RoleAssignmentScope[]
+
+  @@index([projectId, userId, revokedAt])
+  @@index([roleId, revokedAt])
+  @@map("role_assignments")
+}
+
+model RoleAssignmentScope {
+  id           String    @id @default(uuid()) @db.Uuid
+  assignmentId String    @db.Uuid
+  scopeType    ScopeType
+  buildingId   String?   @db.Uuid
+  scopeKey     String    @db.VarChar(180)
+
+  assignment RoleAssignment @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
+  building   Building?      @relation(fields: [buildingId], references: [id], onDelete: Restrict)
+
+  @@unique([assignmentId, scopeKey])
+  @@index([buildingId])
+  @@map("role_assignment_scopes")
+}
+
+model UserPermissionOverride {
+  id           String         @id @default(uuid()) @db.Uuid
+  projectId    String         @db.Uuid
+  userId       String         @db.Uuid
+  permissionId String         @db.Uuid
+  effect       OverrideEffect
+  scopeType    ScopeType
+  buildingId   String?        @db.Uuid
+  scopeKey     String         @db.VarChar(180)
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+
+  project    Project    @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  user       User       @relation(fields: [userId], references: [id], onDelete: Restrict)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Restrict)
+  building   Building?  @relation(fields: [buildingId], references: [id], onDelete: Restrict)
+
+  @@unique([userId, projectId, permissionId, scopeKey])
+  @@index([projectId, userId, permissionId])
+  @@map("user_permission_overrides")
+}
+
+model AuthSession {
+  id            String        @id @default(uuid()) @db.Uuid
+  userId        String        @db.Uuid
+  membershipId  String        @db.Uuid
+  deviceId      String        @db.VarChar(160)
+  status        SessionStatus @default(ACTIVE)
+  userAgentHash String?       @db.Char(64)
+  ipHash        String?       @db.Char(64)
+  lastSeenAt    DateTime      @default(now())
+  revokedAt     DateTime?
+  createdAt     DateTime      @default(now())
+
+  user         User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  membership   ProjectMembership @relation(fields: [membershipId], references: [id], onDelete: Cascade)
+  tokenFamily  RefreshTokenFamily?
+
+  @@index([userId, status])
+  @@index([deviceId, status])
+  @@map("auth_sessions")
+}
+
+model RefreshTokenFamily {
+  id        String         @id @default(uuid()) @db.Uuid
+  sessionId String         @unique @db.Uuid
+  userId    String         @db.Uuid
+  createdAt DateTime       @default(now())
+  revokedAt DateTime?
+
+  session AuthSession    @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  user    User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokens  RefreshToken[]
+
+  @@index([userId, revokedAt])
+  @@map("refresh_token_families")
+}
+
+model RefreshToken {
+  id          String    @id @default(uuid()) @db.Uuid
+  familyId    String    @db.Uuid
+  userId      String    @db.Uuid
+  tokenHash   String    @unique @db.Char(64)
+  parentId    String?   @db.Uuid
+  replacedById String?  @db.Uuid
+  expiresAt   DateTime
+  usedAt      DateTime?
+  revokedAt   DateTime?
+  createdAt   DateTime  @default(now())
+
+  family     RefreshTokenFamily @relation(fields: [familyId], references: [id], onDelete: Cascade)
+  user       User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  parent     RefreshToken?      @relation("RefreshTokenChain", fields: [parentId], references: [id], onDelete: SetNull)
+  successors RefreshToken[]      @relation("RefreshTokenChain")
+
+  @@index([familyId, usedAt, revokedAt])
+  @@index([userId, expiresAt])
+  @@map("refresh_tokens")
+}
+
+model SigningKey {
+  id           String          @id @default(uuid()) @db.Uuid
+  kid          String          @unique @db.VarChar(128)
+  algorithm    String          @default("RS256") @db.VarChar(16)
+  publicJwk    Json
+  privateKeyRef String         @db.VarChar(500)
+  status       SigningKeyStatus @default(ACTIVE)
+  notBefore    DateTime
+  retireAt     DateTime?
+  createdAt    DateTime        @default(now())
+
+  @@index([status, notBefore, retireAt])
+  @@map("signing_keys")
+}
+
+model OutboxEvent {
+  id            String    @id @default(uuid()) @db.Uuid
+  projectId     String?   @db.Uuid
+  eventId       String    @unique @db.Uuid
+  topic         String    @default("qhome.iam.events.v1") @db.VarChar(200)
+  eventType     String    @db.VarChar(160)
+  aggregateType String    @db.VarChar(96)
+  aggregateId   String    @db.VarChar(128)
+  payload       Json
+  headers       Json
+  occurredAt    DateTime  @default(now())
+  publishedAt   DateTime?
+  attempts      Int       @default(0)
+  nextAttemptAt DateTime  @default(now())
+  leasedUntil   DateTime?
+  leaseOwner    String?   @db.VarChar(128)
+  lastError     String?   @db.VarChar(2000)
+
+  project Project? @relation(fields: [projectId], references: [id], onDelete: SetNull)
+
+  @@index([publishedAt, nextAttemptAt, leasedUntil])
+  @@index([aggregateType, aggregateId, occurredAt])
+  @@map("outbox_events")
+}
+
+model AuditEvent {
+  id            String   @id @default(uuid()) @db.Uuid
+  projectId     String?  @db.Uuid
+  actorUserId   String?  @db.Uuid
+  action        String   @db.VarChar(160)
+  resourceType  String   @db.VarChar(96)
+  resourceId    String   @db.VarChar(128)
+  correlationId String   @db.VarChar(128)
+  metadata      Json
+  occurredAt    DateTime @default(now())
+
+  project Project? @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  actor   User?    @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@index([projectId, occurredAt])
+  @@index([actorUserId, occurredAt])
+  @@map("audit_events")
+}

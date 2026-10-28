@@ -1,0 +1,73 @@
+syntax = "proto3";
+
+package qhome.service.catalog.card.v1;
+
+import "common.proto";
+
+option java_multiple_files = true;
+option java_package = "com.qhome.service.catalog.card.v1";
+option csharp_namespace = "QHome.Service.Catalog.Card.V1";
+option go_package = "github.com/qhome/backend/gen/qhome/service/catalog/card/v1;servicecatalogcardv1";
+
+service ServiceCatalogCardService {
+  rpc CalculateCharge(CalculateChargeRequest) returns (CalculateChargeResponse);
+  rpc IssueCard(IssueCardRequest) returns (SmartCardResponse);
+  rpc BlockCard(BlockCardRequest) returns (SmartCardResponse);
+  rpc UnblockCard(UnblockCardRequest) returns (SmartCardResponse);
+}
+
+message CalculateChargeRequest {
+  qhome.common.v1.RequestContext context = 1;
+  string pricing_plan_id = 2;
+  string quantity = 3;
+  string area_sqm = 4;
+  string headcount = 5;
+  string vehicle_count = 6;
+  string period_start = 7;
+  string period_end = 8;
+  string service_start = 9;
+  string service_end = 10;
+}
+
+message CalculateChargeResponse {
+  string net_amount = 1;
+  string vat_amount = 2;
+  string environmental_fee = 3;
+  string total_amount = 4;
+  string currency_code = 5;
+  string rounding_scale = 6;
+}
+
+message IssueCardRequest {
+  qhome.common.v1.RequestContext context = 1;
+  string project_id = 2;
+  string resident_id = 3;
+  string apartment_id = 4;
+  string type = 5;
+  string chip_uid = 6;
+  string external_number = 7;
+  string expires_at = 8;
+}
+
+message BlockCardRequest {
+  qhome.common.v1.RequestContext context = 1;
+  string card_id = 2;
+  string reason = 3;
+}
+
+message UnblockCardRequest {
+  qhome.common.v1.RequestContext context = 1;
+  string card_id = 2;
+}
+
+message SmartCardResponse {
+  string id = 1;
+  string project_id = 2;
+  string resident_id = 3;
+  string apartment_id = 4;
+  string type = 5;
+  string chip_uid = 6;
+  string external_number = 7;
+  string status = 8;
+  string blocked_at = 9;
+}

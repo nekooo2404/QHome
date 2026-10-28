@@ -1,0 +1,360 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("BILLING_FINANCE_DATABASE_URL")
+}
+
+enum BillingPeriodStatus {
+  OPEN
+  CALCULATING
+  ISSUED
+  CLOSED
+  CANCELLED
+}
+
+enum InvoiceStatus {
+  DRAFT
+  ISSUED
+  PARTIALLY_PAID
+  PAID
+  OVERDUE
+  VOIDED
+}
+
+enum PaymentStatus {
+  RECEIVED
+  APPLIED
+  REJECTED
+  REFUNDED
+}
+
+enum PaymentChannel {
+  BANK_TRANSFER
+  E_WALLET
+  VIETQR
+  CASH
+}
+
+enum LedgerAccountType {
+  ASSET
+  LIABILITY
+  EQUITY
+  REVENUE
+  EXPENSE
+}
+
+enum LedgerEntrySide {
+  DEBIT
+  CREDIT
+}
+
+enum WalletEntryType {
+  PAYMENT_SURPLUS
+  INVOICE_APPLICATION
+  REFUND
+  MANUAL_ADJUSTMENT
+}
+
+enum EInvoiceStatus {
+  PENDING
+  SUBMITTED
+  ISSUED
+  FAILED
+}
+
+enum OutboxStatus {
+  PENDING
+  PUBLISHED
+  FAILED
+}
+
+model BillingPeriod {
+  id          String              @id @default(uuid()) @db.Uuid
+  projectId   String              @db.Uuid
+  periodStart DateTime            @db.Date
+  periodEnd   DateTime            @db.Date
+  status      BillingPeriodStatus @default(OPEN)
+  closedAt    DateTime?
+  createdAt   DateTime            @default(now())
+  updatedAt   DateTime            @updatedAt
+
+  invoices  Invoice[]
+  batchJobs BillingBatchJob[]
+
+  @@unique([projectId, periodStart, periodEnd])
+  @@index([projectId, status, periodStart])
+  @@map("billing_periods")
+}
+
+model Invoice {
+  id              String        @id @default(uuid()) @db.Uuid
+  projectId       String        @db.Uuid
+  apartmentId     String        @db.Uuid
+  residentId      String?       @db.Uuid
+  billingPeriodId String        @db.Uuid
+  invoiceNumber   String        @db.VarChar(96)
+  status          InvoiceStatus @default(DRAFT)
+  currencyCode    String        @db.Char(3)
+  subtotal        Decimal       @db.Decimal(24, 12)
+  vatAmount       Decimal       @db.Decimal(24, 12)
+  totalAmount     Decimal       @db.Decimal(24, 12)
+  paidAmount      Decimal       @default(0) @db.Decimal(24, 12)
+  dueAt           DateTime      @db.Date
+  issuedAt        DateTime?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+  version         Int           @default(1)
+
+  billingPeriod BillingPeriod       @relation(fields: [billingPeriodId], references: [id], onDelete: Restrict)
+  items         InvoiceItem[]
+  payments      PaymentAllocation[]
+  eInvoices     EInvoice[]
+
+  @@unique([projectId, invoiceNumber])
+  @@unique([billingPeriodId, apartmentId])
+  @@index([projectId, apartmentId, status, dueAt])
+  @@index([projectId, residentId, status, dueAt])
+  @@index([billingPeriodId, status])
+  @@map("invoices")
+}
+
+model InvoiceItem {
+  id              String   @id @default(uuid()) @db.Uuid
+  invoiceId       String   @db.Uuid
+  serviceId       String   @db.Uuid
+  description     String   @db.VarChar(500)
+  quantity        Decimal  @db.Decimal(24, 12)
+  unitPrice       Decimal  @db.Decimal(24, 12)
+  netAmount       Decimal  @db.Decimal(24, 12)
+  vatAmount       Decimal  @db.Decimal(24, 12)
+  totalAmount     Decimal  @db.Decimal(24, 12)
+  currencyCode    String   @db.Char(3)
+  pricingSnapshot Json
+
+  invoice Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  @@index([invoiceId, serviceId])
+  @@map("invoice_items")
+}
+
+model PaymentTransaction {
+  id                    String        @id @default(uuid()) @db.Uuid
+  projectId             String        @db.Uuid
+  apartmentId           String        @db.Uuid
+  residentId            String?       @db.Uuid
+  provider              String        @db.VarChar(64)
+  providerTransactionId String        @db.VarChar(160)
+  idempotencyKey        String        @db.VarChar(160)
+  channel               PaymentChannel
+  status                PaymentStatus @default(RECEIVED)
+  currencyCode          String        @db.Char(3)
+  grossAmount           Decimal       @db.Decimal(24, 12)
+  appliedAmount         Decimal       @default(0) @db.Decimal(24, 12)
+  surplusAmount         Decimal       @default(0) @db.Decimal(24, 12)
+  rawReference          String?       @db.VarChar(500)
+  providerOccurredAt    DateTime?
+  createdAt             DateTime      @default(now())
+  updatedAt             DateTime      @updatedAt
+
+  allocations PaymentAllocation[]
+
+  @@unique([provider, providerTransactionId])
+  @@unique([provider, idempotencyKey])
+  @@index([projectId, apartmentId, createdAt])
+  @@index([projectId, status, createdAt])
+  @@map("payment_transactions")
+}
+
+model PaymentAllocation {
+  id          String   @id @default(uuid()) @db.Uuid
+  paymentId   String   @db.Uuid
+  invoiceId   String   @db.Uuid
+  amount      Decimal  @db.Decimal(24, 12)
+  allocatedAt DateTime @default(now())
+
+  payment PaymentTransaction @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+  invoice Invoice            @relation(fields: [invoiceId], references: [id], onDelete: Restrict)
+
+  @@unique([paymentId, invoiceId])
+  @@index([invoiceId, allocatedAt])
+  @@map("payment_allocations")
+}
+
+model ApartmentWallet {
+  id           String  @id @default(uuid()) @db.Uuid
+  projectId    String  @db.Uuid
+  apartmentId  String  @db.Uuid
+  currencyCode String  @db.Char(3)
+  balance      Decimal @default(0) @db.Decimal(24, 12)
+  version      Int     @default(1)
+  updatedAt    DateTime @updatedAt
+
+  entries WalletEntry[]
+
+  @@unique([projectId, apartmentId, currencyCode])
+  @@index([projectId, apartmentId])
+  @@map("apartment_wallets")
+}
+
+model WalletEntry {
+  id           String          @id @default(uuid()) @db.Uuid
+  walletId     String          @db.Uuid
+  paymentId    String?         @db.Uuid
+  invoiceId    String?         @db.Uuid
+  type         WalletEntryType
+  amount       Decimal         @db.Decimal(24, 12)
+  balanceAfter Decimal         @db.Decimal(24, 12)
+  description  String          @db.VarChar(500)
+  createdAt    DateTime        @default(now())
+
+  wallet ApartmentWallet @relation(fields: [walletId], references: [id], onDelete: Restrict)
+
+  @@unique([paymentId, type])
+  @@index([walletId, createdAt])
+  @@map("wallet_entries")
+}
+
+model LedgerTransaction {
+  id            String   @id @default(uuid()) @db.Uuid
+  projectId     String   @db.Uuid
+  referenceType String   @db.VarChar(96)
+  referenceId   String   @db.VarChar(160)
+  description   String   @db.VarChar(500)
+  postedAt      DateTime @default(now())
+
+  entries LedgerEntry[]
+
+  @@unique([projectId, referenceType, referenceId])
+  @@index([projectId, postedAt])
+  @@map("ledger_transactions")
+}
+
+model LedgerAccount {
+  id           String            @id @default(uuid()) @db.Uuid
+  projectId    String            @db.Uuid
+  code         String            @db.VarChar(64)
+  name         String            @db.VarChar(200)
+  type         LedgerAccountType
+  currencyCode String            @db.Char(3)
+  isActive     Boolean           @default(true)
+
+  entries LedgerEntry[]
+
+  @@unique([projectId, code])
+  @@index([projectId, type, isActive])
+  @@map("ledger_accounts")
+}
+
+model LedgerEntry {
+  id            String          @id @default(uuid()) @db.Uuid
+  transactionId String          @db.Uuid
+  accountId     String          @db.Uuid
+  side          LedgerEntrySide
+  amount        Decimal         @db.Decimal(24, 12)
+  currencyCode  String          @db.Char(3)
+  apartmentId   String?         @db.Uuid
+  description   String          @db.VarChar(500)
+
+  transaction LedgerTransaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+  account     LedgerAccount     @relation(fields: [accountId], references: [id], onDelete: Restrict)
+
+  @@index([accountId, apartmentId, currencyCode])
+  @@index([transactionId, side])
+  @@map("ledger_entries")
+}
+
+model EInvoice {
+  id                String         @id @default(uuid()) @db.Uuid
+  projectId         String         @db.Uuid
+  invoiceId         String         @db.Uuid
+  provider          String         @db.VarChar(64)
+  providerInvoiceId String?        @db.VarChar(160)
+  status            EInvoiceStatus @default(PENDING)
+  attempts          Int            @default(0)
+  lastError         String?        @db.VarChar(2000)
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+
+  invoice Invoice @relation(fields: [invoiceId], references: [id], onDelete: Restrict)
+
+  @@unique([provider, providerInvoiceId])
+  @@unique([invoiceId, provider])
+  @@index([projectId, status, updatedAt])
+  @@map("e_invoices")
+}
+
+model IdempotencyRecord {
+  id             String   @id @default(uuid()) @db.Uuid
+  scope          String   @db.VarChar(160)
+  idempotencyKey String   @db.VarChar(160)
+  requestHash    String   @db.Char(64)
+  responseBody   Json?
+  statusCode     Int?
+  createdAt      DateTime @default(now())
+  expiresAt      DateTime
+
+  @@unique([scope, idempotencyKey])
+  @@index([expiresAt])
+  @@map("idempotency_records")
+}
+
+model WebhookReceipt {
+  id              String   @id @default(uuid()) @db.Uuid
+  provider        String   @db.VarChar(64)
+  providerEventId String   @db.VarChar(160)
+  timestamp       DateTime
+  signature       String   @db.VarChar(256)
+  payloadHash     String   @db.Char(64)
+  createdAt       DateTime @default(now())
+
+  @@unique([provider, providerEventId])
+  @@index([provider, timestamp])
+  @@map("webhook_receipts")
+}
+
+model BillingBatchJob {
+  id              String   @id @default(uuid()) @db.Uuid
+  billingPeriodId String   @db.Uuid
+  projectId       String   @db.Uuid
+  status          String   @default("QUEUED") @db.VarChar(32)
+  totalApartments Int      @default(0)
+  processed       Int      @default(0)
+  failed          Int      @default(0)
+  createdAt       DateTime @default(now())
+  startedAt       DateTime?
+  completedAt     DateTime?
+  lastError       String?  @db.VarChar(2000)
+
+  billingPeriod BillingPeriod @relation(fields: [billingPeriodId], references: [id], onDelete: Restrict)
+
+  @@unique([billingPeriodId, projectId])
+  @@index([projectId, status, createdAt])
+  @@map("billing_batch_jobs")
+}
+
+model OutboxEvent {
+  id            String       @id @default(uuid()) @db.Uuid
+  projectId     String?      @db.Uuid
+  eventId       String       @unique @db.VarChar(160)
+  topic         String       @db.VarChar(200)
+  eventType     String       @db.VarChar(160)
+  aggregateType String       @db.VarChar(96)
+  aggregateId   String       @db.VarChar(160)
+  payload       Json
+  headers       Json         @default("{}")
+  status        OutboxStatus @default(PENDING)
+  attempts      Int          @default(0)
+  occurredAt    DateTime     @default(now())
+  nextAttemptAt DateTime     @default(now())
+  publishedAt   DateTime?
+  leasedUntil   DateTime?
+  leaseOwner    String?      @db.VarChar(128)
+  lastError     String?      @db.VarChar(2000)
+
+  @@index([status, nextAttemptAt, leasedUntil])
+  @@index([projectId, occurredAt])
+  @@map("outbox_events")
+}

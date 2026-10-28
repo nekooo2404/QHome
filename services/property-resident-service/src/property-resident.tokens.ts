@@ -1,0 +1,9 @@
+export const PROPERTY_RESIDENT_TOKENS = {
+  Primary: Symbol('PROPERTY_RESIDENT_PRIMARY'),
+  Replica: Symbol('PROPERTY_RESIDENT_REPLICA'),
+  Redis: Symbol('PROPERTY_RESIDENT_REDIS'),
+  KafkaProducer: Symbol('PROPERTY_RESIDENT_KAFKA_PRODUCER'),
+  OutboxRelay: Symbol('PROPERTY_RESIDENT_OUTBOX_RELAY'),
+  Repository: Symbol('PROPERTY_RESIDENT_REPOSITORY'),
+  Cache: Symbol('PROPERTY_RESIDENT_CACHE'),
+} as const;

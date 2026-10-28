@@ -1,0 +1,432 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("ASSET_MAINTENANCE_DATABASE_URL")
+}
+
+enum AssetStatus {
+  PLANNED
+  OPERATIONAL
+  DEGRADED
+  OUT_OF_SERVICE
+  RETIRED
+}
+
+enum DepreciationMethod {
+  STRAIGHT_LINE
+  NONE
+}
+
+enum MaintenancePlanStatus {
+  ACTIVE
+  PAUSED
+  RETIRED
+}
+
+enum WorkOrderStatus {
+  OPEN
+  ASSIGNED
+  IN_PROGRESS
+  BLOCKED
+  COMPLETED
+  CANCELLED
+}
+
+enum WorkOrderPriority {
+  LOW
+  NORMAL
+  HIGH
+  CRITICAL
+}
+
+enum WorkOrderSource {
+  SCHEDULED
+  INCIDENT
+  CHECKLIST
+  PCCC_EXPIRY
+  MANUAL
+}
+
+enum PartnerStatus {
+  ACTIVE
+  SUSPENDED
+  INACTIVE
+}
+
+enum ChecklistExecutionStatus {
+  IN_PROGRESS
+  SUBMITTED
+  REJECTED
+}
+
+enum ChecklistResultStatus {
+  PASS
+  FAIL
+  NOT_APPLICABLE
+}
+
+enum FailureSeverity {
+  NORMAL
+  CRITICAL
+}
+
+enum PcccDeviceStatus {
+  OPERATIONAL
+  DEGRADED
+  FAILED
+  RETIRED
+}
+
+enum PcccInspectionStatus {
+  SCHEDULED
+  PASSED
+  FAILED
+  EXPIRED
+}
+
+enum PcccIncidentStatus {
+  OPEN
+  ACKNOWLEDGED
+  CONTAINED
+  RESOLVED
+}
+
+model Asset {
+  id                  String             @id @default(uuid()) @db.Uuid
+  projectId           String             @db.Uuid
+  buildingId          String             @db.Uuid
+  parentAssetId       String?            @db.Uuid
+  assetCode           String             @db.VarChar(96)
+  name                String             @db.VarChar(240)
+  category            String             @db.VarChar(120)
+  location            String             @db.VarChar(500)
+  serialNumber        String?            @db.VarChar(160)
+  technicalSpecs      Json               @default("{}")
+  status              AssetStatus        @default(PLANNED)
+  depreciationMethod  DepreciationMethod @default(STRAIGHT_LINE)
+  acquisitionCost     Decimal            @db.Decimal(24, 12)
+  salvageValue        Decimal            @default(0) @db.Decimal(24, 12)
+  usefulLifeMonths    Int                @default(0)
+  commissionedAt      DateTime?
+  retiredAt           DateTime?
+  version             Int                @default(1)
+  createdAt           DateTime           @default(now())
+  updatedAt           DateTime           @updatedAt
+
+  parentAsset         Asset?              @relation("AssetHierarchy", fields: [parentAssetId], references: [id], onDelete: Restrict)
+  childAssets         Asset[]             @relation("AssetHierarchy")
+  depreciationEntries AssetDepreciation[]
+  maintenancePlans   MaintenancePlan[]
+  workOrders          MaintenanceWorkOrder[]
+  checklistExecutions ChecklistExecution[]
+  pcccDevice          PcccDevice?
+  pcccInspections     PcccInspection[]
+
+  @@unique([projectId, assetCode])
+  @@index([projectId, buildingId, status])
+  @@index([projectId, category, status])
+  @@index([buildingId, location])
+  @@map("assets")
+}
+
+model AssetDepreciation {
+  id              String   @id @default(uuid()) @db.Uuid
+  assetId         String   @db.Uuid
+  periodStart     DateTime @db.Date
+  periodEnd       DateTime @db.Date
+  openingValue    Decimal  @db.Decimal(24, 12)
+  depreciation    Decimal  @db.Decimal(24, 12)
+  closingValue    Decimal  @db.Decimal(24, 12)
+  postedAt        DateTime @default(now())
+
+  asset Asset @relation(fields: [assetId], references: [id], onDelete: Cascade)
+
+  @@unique([assetId, periodStart, periodEnd])
+  @@index([assetId, periodEnd])
+  @@map("asset_depreciation_entries")
+}
+
+model MaintenancePlan {
+  id                 String               @id @default(uuid()) @db.Uuid
+  projectId          String               @db.Uuid
+  assetId            String               @db.Uuid
+  partnerId           String?              @db.Uuid
+  name               String               @db.VarChar(240)
+  intervalDays       Int
+  nextDueAt          DateTime
+  status             MaintenancePlanStatus @default(ACTIVE)
+  checklistTemplateId String?             @db.Uuid
+  version            Int                  @default(1)
+  createdAt          DateTime             @default(now())
+  updatedAt          DateTime             @updatedAt
+
+  asset             Asset              @relation(fields: [assetId], references: [id], onDelete: Restrict)
+  partner           MaintenancePartner? @relation(fields: [partnerId], references: [id], onDelete: SetNull)
+  checklistTemplate ChecklistTemplate?  @relation(fields: [checklistTemplateId], references: [id], onDelete: SetNull)
+  workOrders        MaintenanceWorkOrder[]
+
+  @@index([projectId, status, nextDueAt])
+  @@index([assetId, status, nextDueAt])
+  @@map("maintenance_plans")
+}
+
+model MaintenanceWorkOrder {
+  id               String            @id @default(uuid()) @db.Uuid
+  projectId        String            @db.Uuid
+  assetId          String?           @db.Uuid
+  maintenancePlanId String?         @db.Uuid
+  partnerId        String?           @db.Uuid
+  source           WorkOrderSource
+  priority         WorkOrderPriority @default(NORMAL)
+  status           WorkOrderStatus   @default(OPEN)
+  deduplicationKey String            @unique @db.VarChar(220)
+  title            String            @db.VarChar(240)
+  description      String?           @db.VarChar(4000)
+  scheduledAt      DateTime?
+  startedAt        DateTime?
+  completedAt      DateTime?
+  dueAt            DateTime?
+  version          Int               @default(1)
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+
+  asset           Asset?              @relation(fields: [assetId], references: [id], onDelete: SetNull)
+  maintenancePlan MaintenancePlan?    @relation(fields: [maintenancePlanId], references: [id], onDelete: SetNull)
+  partner         MaintenancePartner? @relation(fields: [partnerId], references: [id], onDelete: SetNull)
+
+  @@index([projectId, status, priority, dueAt])
+  @@index([projectId, assetId, createdAt])
+  @@map("maintenance_work_orders")
+}
+
+model MaintenancePartner {
+  id          String        @id @default(uuid()) @db.Uuid
+  projectId   String        @db.Uuid
+  code        String        @db.VarChar(96)
+  name        String        @db.VarChar(240)
+  status      PartnerStatus @default(ACTIVE)
+  phone       String?       @db.VarChar(32)
+  email       String?       @db.VarChar(320)
+  services    Json          @default("[]")
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  plans       MaintenancePlan[]
+  workOrders  MaintenanceWorkOrder[]
+  evaluations PartnerEvaluation[]
+
+  @@unique([projectId, code])
+  @@index([projectId, status])
+  @@map("maintenance_partners")
+}
+
+model PartnerEvaluation {
+  id          String   @id @default(uuid()) @db.Uuid
+  partnerId   String   @db.Uuid
+  workOrderId String?  @db.Uuid
+  score       Decimal  @db.Decimal(8, 4)
+  comment     String?  @db.VarChar(2000)
+  evaluatedBy String   @db.Uuid
+  createdAt   DateTime @default(now())
+
+  partner MaintenancePartner @relation(fields: [partnerId], references: [id], onDelete: Cascade)
+
+  @@index([partnerId, createdAt])
+  @@map("partner_evaluations")
+}
+
+model ChecklistTemplate {
+  id          String   @id @default(uuid()) @db.Uuid
+  projectId   String   @db.Uuid
+  code        String   @db.VarChar(96)
+  name        String   @db.VarChar(240)
+  version     Int      @default(1)
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  items       ChecklistTemplateItem[]
+  plans       MaintenancePlan[]
+  executions  ChecklistExecution[]
+
+  @@unique([projectId, code, version])
+  @@index([projectId, isActive])
+  @@map("checklist_templates")
+}
+
+model ChecklistTemplateItem {
+  id           String        @id @default(uuid()) @db.Uuid
+  templateId   String        @db.Uuid
+  itemCode     String        @db.VarChar(96)
+  label        String        @db.VarChar(500)
+  instructions String?       @db.VarChar(2000)
+  isRequired   Boolean       @default(true)
+  isPccc       Boolean       @default(false)
+  sequence     Int
+
+  template ChecklistTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
+
+  @@unique([templateId, itemCode])
+  @@index([templateId, sequence])
+  @@map("checklist_template_items")
+}
+
+model ChecklistExecution {
+  id            String                   @id @default(uuid()) @db.Uuid
+  projectId     String                   @db.Uuid
+  assetId       String?                  @db.Uuid
+  templateId    String                   @db.Uuid
+  workOrderId   String?                  @db.Uuid
+  shiftKey      String                   @db.VarChar(96)
+  performedBy   String                   @db.Uuid
+  status        ChecklistExecutionStatus @default(IN_PROGRESS)
+  startedAt     DateTime                 @default(now())
+  submittedAt   DateTime?
+  version       Int                      @default(1)
+
+  asset         Asset?             @relation(fields: [assetId], references: [id], onDelete: SetNull)
+  template      ChecklistTemplate  @relation(fields: [templateId], references: [id], onDelete: Restrict)
+  results       ChecklistResult[]
+
+  @@unique([projectId, templateId, assetId, shiftKey])
+  @@index([projectId, status, startedAt])
+  @@index([assetId, startedAt])
+  @@map("checklist_executions")
+}
+
+model ChecklistResult {
+  id           String           @id @default(uuid()) @db.Uuid
+  executionId  String           @db.Uuid
+  itemId       String           @db.Uuid
+  status       ChecklistResultStatus
+  severity     FailureSeverity  @default(NORMAL)
+  notes        String?          @db.VarChar(4000)
+  evidenceRef  String?          @db.VarChar(500)
+  observedAt   DateTime         @default(now())
+
+  execution ChecklistExecution @relation(fields: [executionId], references: [id], onDelete: Cascade)
+
+  @@unique([executionId, itemId])
+  @@index([executionId, status, severity])
+  @@map("checklist_results")
+}
+
+model PcccDevice {
+  id                    String          @id @default(uuid()) @db.Uuid
+  projectId             String          @db.Uuid
+  buildingId            String          @db.Uuid
+  assetId               String          @unique @db.Uuid
+  deviceType            String          @db.VarChar(160)
+  certificationNumber   String?         @db.VarChar(160)
+  inspectionIntervalDays Int
+  nextInspectionAt      DateTime
+  status                PcccDeviceStatus @default(OPERATIONAL)
+  createdAt             DateTime        @default(now())
+  updatedAt             DateTime        @updatedAt
+
+  asset       Asset            @relation(fields: [assetId], references: [id], onDelete: Restrict)
+  inspections PcccInspection[]
+
+  @@index([projectId, buildingId, nextInspectionAt, status])
+  @@map("pccc_devices")
+}
+
+model PcccInspection {
+  id             String                @id @default(uuid()) @db.Uuid
+  projectId      String                @db.Uuid
+  buildingId     String                @db.Uuid
+  assetId        String                @db.Uuid
+  deviceId       String                @db.Uuid
+  status         PcccInspectionStatus
+  inspectedBy    String                @db.Uuid
+  inspectedAt    DateTime
+  validUntil     DateTime?
+  findings       String?               @db.VarChar(4000)
+  certificateRef String?               @db.VarChar(500)
+  createdAt      DateTime              @default(now())
+
+  asset  Asset      @relation(fields: [assetId], references: [id], onDelete: Restrict)
+  device PcccDevice @relation(fields: [deviceId], references: [id], onDelete: Restrict)
+
+  @@index([projectId, buildingId, status, validUntil])
+  @@index([deviceId, inspectedAt])
+  @@map("pccc_inspections")
+}
+
+model PcccDrill {
+  id            String   @id @default(uuid()) @db.Uuid
+  projectId     String   @db.Uuid
+  buildingId    String   @db.Uuid
+  scheduledAt   DateTime
+  conductedAt   DateTime?
+  scenario      String   @db.VarChar(2000)
+  result        String?  @db.VarChar(4000)
+  participants  Int      @default(0)
+  createdBy     String   @db.Uuid
+  createdAt     DateTime @default(now())
+
+  @@index([projectId, buildingId, scheduledAt])
+  @@map("pccc_drills")
+}
+
+model PcccIncident {
+  id            String              @id @default(uuid()) @db.Uuid
+  projectId     String              @db.Uuid
+  buildingId    String              @db.Uuid
+  assetId       String?             @db.Uuid
+  checklistId   String?             @db.Uuid
+  status        PcccIncidentStatus  @default(OPEN)
+  severity      WorkOrderPriority   @default(CRITICAL)
+  title         String              @db.VarChar(240)
+  description   String              @db.VarChar(4000)
+  reportedBy    String              @db.Uuid
+  occurredAt    DateTime            @default(now())
+  resolvedAt    DateTime?
+
+  @@index([projectId, buildingId, status, occurredAt])
+  @@map("pccc_incidents")
+}
+
+model AuditLog {
+  id            String   @id @default(uuid()) @db.Uuid
+  projectId     String   @db.Uuid
+  actorId       String?  @db.Uuid
+  action        String   @db.VarChar(160)
+  entityType    String   @db.VarChar(96)
+  entityId      String   @db.VarChar(160)
+  beforeState   Json?
+  afterState    Json?
+  correlationId String   @db.VarChar(160)
+  occurredAt    DateTime @default(now())
+
+  @@index([projectId, entityType, entityId, occurredAt])
+  @@index([projectId, occurredAt])
+  @@map("audit_logs")
+}
+
+model OutboxEvent {
+  id            String   @id @default(uuid()) @db.Uuid
+  projectId     String?  @db.Uuid
+  eventId       String   @unique @db.VarChar(160)
+  topic         String   @db.VarChar(200)
+  eventType     String   @db.VarChar(160)
+  aggregateType String   @db.VarChar(96)
+  aggregateId   String   @db.VarChar(160)
+  payload       Json
+  headers       Json     @default("{}")
+  status        String   @default("PENDING") @db.VarChar(32)
+  attempts      Int      @default(0)
+  occurredAt    DateTime @default(now())
+  nextAttemptAt DateTime @default(now())
+  publishedAt   DateTime?
+  leasedUntil   DateTime?
+  leaseOwner    String?  @db.VarChar(128)
+  lastError     String?  @db.VarChar(2000)
+
+  @@index([status, nextAttemptAt, leasedUntil])
+  @@index([projectId, occurredAt])
+  @@map("outbox_events")
+}

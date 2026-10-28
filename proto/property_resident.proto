@@ -1,0 +1,119 @@
+syntax = "proto3";
+
+package qhome.property.resident.v1;
+
+import "common.proto";
+
+option java_multiple_files = true;
+option java_package = "com.qhome.property.resident.v1";
+option csharp_namespace = "QHome.Property.Resident.V1";
+option go_package = "github.com/qhome/backend/gen/qhome/property/resident/v1;propertyresidentv1";
+
+service PropertyResidentService {
+  rpc GetApartment(GetApartmentRequest) returns (ApartmentResponse);
+  rpc ListBuildingBlocks(ListBuildingBlocksRequest) returns (BuildingBlocksResponse);
+  rpc ListBlockFloors(ListBlockFloorsRequest) returns (FloorsResponse);
+  rpc ListResidentApartments(ListResidentApartmentsRequest) returns (ListResidentApartmentsResponse);
+  rpc SwitchActiveApartment(SwitchActiveApartmentRequest) returns (ActiveApartmentResponse);
+  rpc ListApartmentVehicles(ListApartmentVehiclesRequest) returns (ListApartmentVehiclesResponse);
+}
+
+message ListBuildingBlocksRequest {
+  qhome.common.v1.RequestContext context = 1;
+  string building_id = 2;
+}
+
+message BuildingBlockItem {
+  string id = 1;
+  string building_id = 2;
+  string code = 3;
+  string name = 4;
+  string status = 5;
+}
+
+message BuildingBlocksResponse { repeated BuildingBlockItem blocks = 1; }
+
+message ListBlockFloorsRequest {
+  qhome.common.v1.RequestContext context = 1;
+  string block_id = 2;
+}
+
+message FloorItem {
+  string id = 1;
+  string block_id = 2;
+  int32 floor_no = 3;
+  string label = 4;
+}
+
+message FloorsResponse { repeated FloorItem floors = 1; }
+
+message GetApartmentRequest {
+  qhome.common.v1.RequestContext context = 1;
+  string apartment_id = 2;
+}
+
+message ApartmentResponse {
+  string id = 1;
+  string project_id = 2;
+  string building_id = 3;
+  string block_id = 4;
+  string floor_id = 5;
+  string code = 6;
+  string net_area_sqm = 7;
+  string gross_area_sqm = 8;
+  string status = 9;
+  string handover_status = 10;
+}
+
+message ListResidentApartmentsRequest {
+  qhome.common.v1.RequestContext context = 1;
+  string resident_id = 2;
+  string project_id = 3;
+}
+
+message ResidentApartmentItem {
+  string apartment_id = 1;
+  string project_id = 2;
+  string building_id = 3;
+  string apartment_code = 4;
+  string role = 5;
+  string status = 6;
+  bool is_active = 7;
+}
+
+message ListResidentApartmentsResponse {
+  repeated ResidentApartmentItem apartments = 1;
+}
+
+message SwitchActiveApartmentRequest {
+  qhome.common.v1.RequestContext context = 1;
+  string resident_id = 2;
+  string project_id = 3;
+  string apartment_id = 4;
+}
+
+message ActiveApartmentResponse {
+  string resident_id = 1;
+  string project_id = 2;
+  string apartment_id = 3;
+  string selected_at = 4;
+}
+
+message ListApartmentVehiclesRequest {
+  qhome.common.v1.RequestContext context = 1;
+  string apartment_id = 2;
+}
+
+message VehicleItem {
+  string id = 1;
+  string resident_id = 2;
+  string apartment_id = 3;
+  string type = 4;
+  string license_plate = 5;
+  string registration_number = 6;
+  string status = 7;
+}
+
+message ListApartmentVehiclesResponse {
+  repeated VehicleItem vehicles = 1;
+}

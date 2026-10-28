@@ -11,21 +11,32 @@ option csharp_namespace = "QHome.Common.V1";
 option go_package = "github.com/qhome/backend/gen/qhome/common/v1;commonv1";
 
 message RequestContext {
+  // Propagated from the edge and used to correlate logs, traces, RPC metadata,
+  // and Kafka headers. It is not an authorization credential.
   string correlation_id = 1;
+  // Identifies the causal command or event that led to this operation.
   string causation_id = 2;
+  // The authorized project/building boundary after authentication. On the
+  // pre-authentication IAM route it is only a tenant-selection hint and must
+  // be validated by iam-service before credentials are issued.
   string tenant_id = 3;
+  // Required for resident-scoped operations and absent for BQL-wide actions.
   string apartment_id = 4;
   string actor_id = 5;
   string subject = 6;
   string source = 7;
   string traceparent = 8;
   string tracestate = 9;
+  string client_type = 10;
+  repeated string scopes = 11;
+  string session_id = 12;
 }
 
 message CommandMetadata {
   RequestContext context = 1;
   string idempotency_key = 2;
   string request_id = 3;
+  string operation_name = 4;
 }
 
 message ResourceRef {
@@ -40,8 +51,12 @@ message Money {
 }
 
 message PageRequest {
+  // Services must reject values above their documented maximum (default 100)
+  // instead of allocating an unbounded result set.
   uint32 page_size = 1;
   string page_token = 2;
+  // Must be resolved against a service-owned allowlist; never concatenate this
+  // value into SQL or pass it through as an arbitrary database expression.
   string order_by = 3;
   bool descending = 4;
 }
@@ -65,6 +80,8 @@ message ErrorDetail {
   google.protobuf.Duration retry_after = 5;
   string correlation_id = 6;
   map<string, string> metadata = 7;
+  string status = 8;
+  string documentation_url = 9;
 }
 
 message EventEnvelope {
@@ -82,6 +99,12 @@ message EventEnvelope {
   string traceparent = 12;
   string tracestate = 13;
   string payload_type = 14;
+  // The serialized concrete event message for the versioned topic schema.
+  // Producers must reject an empty event_id and must not publish a second
+  // encoding of the same event in another field.
   bytes payload = 15;
   map<string, string> attributes = 16;
+  string payload_schema = 17;
+  uint64 aggregate_sequence = 18;
+  string apartment_id = 19;
 }

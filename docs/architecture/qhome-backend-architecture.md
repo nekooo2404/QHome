@@ -65,6 +65,7 @@ flowchart LR
     NOTIFY --> NOTIFYDB[(qhome_notification\nPostgreSQL 16)]
     DOC --> DOCDB[(qhome_document\nPostgreSQL 16)]
     AUDIT --> AUDITDB[(qhome_audit\nPostgreSQL 16)]
+    SEARCH --> SEARCHDB[(qhome_search\nPostgreSQL 16)]
     SEARCH --> ES[(qhome_search_*\nElasticsearch 8)]
 
     GW -. rate limits, idempotency .-> REDIS[(Redis Cluster 7\ncache, locks, dedupe)]
@@ -120,7 +121,7 @@ flowchart LR
     PROM --> GRAF
 ```
 
-`Redis Cluster` is never the source of truth for billing, occupancy, access, or booking. The search service is the only owner of the Elasticsearch indexes. PostgreSQL databases may run on a shared HA cluster initially, but each database has a separate role, migration history, network policy, and backup/restore boundary.
+`Redis Cluster` is never the source of truth for billing, occupancy, access, or booking. The search service owns the PostgreSQL projection catalog/checkpoints and is the only owner of the Elasticsearch indexes. PostgreSQL databases may run on a shared HA cluster initially, but each database has a separate role, migration history, network policy, and backup/restore boundary.
 
 ## 2. Gateway routing and request context
 
@@ -145,11 +146,41 @@ flowchart LR
 Gateway policy:
 
 - Verify JWT signature, expiry, issuer, audience, and required scopes.
-- Resolve the selected membership and overwrite `x-tenant-id` with the authorized tenant ID. Reject a conflicting client value.
+- Resolve the selected membership from signed token claims and overwrite `x-tenant-id` with the authorized tenant ID. Reject a conflicting client value. The request path does not perform a synchronous IAM lookup; tokens without a usable membership claim are rejected and refreshed through the authentication flow.
 - Require `x-apartment-id` for resident operations and verify that it belongs to the authenticated resident's active occupancy. BQL operations omit it or use an explicitly authorized apartment scope.
 - Generate a correlation ID when absent, reject malformed or duplicated values, and propagate it to HTTP, gRPC metadata, Kafka headers, and logs.
 - Forward `x-actor-id`, `x-scopes`, and `x-client-type` as gateway-authenticated context. Services still perform resource-level authorization; gateway verification is not a substitute for service authorization.
 - Apply route-specific quotas and an `Idempotency-Key` requirement to payment, booking, access-pass, and other commands that can be retried.
+
+The route plugin order is fixed and must be the same in Kong and APISIX:
+
+```text
+TLS termination
+  -> correlation-id validation/generation
+  -> JWT signature/issuer/audience verification
+  -> tenant membership and apartment occupancy enforcement
+  -> route-specific rate limit and request-size limit
+  -> idempotency-key enforcement for retryable commands
+  -> upstream forwarding with authenticated context headers
+```
+
+Every Internet-facing `/v1/**` route requires `x-correlation-id` and `x-tenant-id`. `/v1/auth/**` is the pre-authentication exception only for JWT verification: its tenant header is a tenant-selection hint that `iam-service` validates before issuing credentials, never proof of membership. A separate control-plane bootstrap flow is required for operations that create the first tenant; it is not part of the resident or BQL APIs. The gateway must use `strip_path: false` (or the APISIX equivalent) so the upstream service receives the same versioned path that is documented publicly. No service pod is Internet-routable; NetworkPolicy and mTLS protect the private upstream network.
+
+The gateway must never call an upstream service through its own public route. IAM never calls the gateway, which keeps the edge dependency acyclic. Every private service link uses authenticated service identity/mTLS, and every target service still verifies tenant and resource authorization instead of treating gateway headers as proof by themselves.
+
+### Gateway route contract
+
+| Route group | Context required | Command policy | Upstream rule |
+|---|---|---|---|
+| `/v1/auth/**` | `x-correlation-id` and `x-tenant-id`; no JWT required | Auth endpoints are rate limited; login/token operations are never retried by the gateway; IAM validates the tenant hint | `iam-service`, preserve path |
+| `/v1/me` | Authenticated tenant context; apartment only for resident-scoped reads | Read scope and membership required | `iam-service`, preserve path |
+| `/v1/properties/**`, `/v1/buildings/**`, `/v1/apartments/**` | Tenant; apartment only for resident-scoped reads | BQL write scopes or resident read scope | `property-service`, preserve path |
+| `/v1/invoices/**`, `/v1/payment-intents/**`, `/v1/payments/**` | Tenant; apartment for resident commands | `Idempotency-Key`, stricter quota, bounded body size | `billing-service` or `payment-service`, preserve path |
+| `/v1/service-requests/**`, `/v1/bookings/**`, `/v1/visitor-passes/**` | Tenant and apartment for resident commands | `Idempotency-Key` on create/cancel/issue commands | `maintenance-service`, `facility-service`, or `access-service` |
+| `/v1/announcements/**`, `/v1/notifications/**`, `/v1/documents/**`, `/v1/search/**` | Tenant; apartment when the resource is resident-scoped | Read/write scope enforced by gateway and service | Domain-specific upstream, preserve path |
+| `/health/live`, `/health/ready` | No tenant context | Internal load balancer only; never Internet-routed | Local service process |
+
+The route table above is intentionally a policy contract rather than a copy-pasted Kong/APISIX deployment file. The concrete gateway declarative file belongs to the deployment repository, where upstream DNS, TLS certificates, plugin versions, and environment-specific quotas are known.
 
 Every service exposes an OpenAPI 3.1 document. Use cursor pagination, `application/problem+json` error envelopes, RFC 3339 timestamps, integer minor units for money, and explicit command/read routes. Do not expose database models directly.
 
@@ -173,9 +204,25 @@ Every service exposes an OpenAPI 3.1 document. Use cursor pagination, `applicati
 | `notification-service` | Recipient inbox, channel preferences, delivery attempts, provider status; `qhome_notification` | `/v1/notifications`, `/v1/notification-preferences`, `/v1/delivery-status` | `SendNotification`, `GetInbox` | `qhome.notification.events.v1`: `NotificationDelivered`, `NotificationFailed`, `NotificationRead` | All business event topics that require delivery |
 | `document-service` | Document metadata, ACL references, object-storage keys, retention state; `qhome_document` | `/v1/documents`, `/v1/document-links` | `GetDocumentAccess`, `CreateDownloadGrant` | `qhome.document.events.v1`: `DocumentUploaded`, `DocumentDeleted`, `DocumentAccessed` | `property.events`, `resident.events` |
 | `audit-service` | Append-only audit records, actor/resource references, retention; `qhome_audit` | `/v1/audit-events` | `AppendAuditRecord` for controlled internal use | None | All versioned domain event topics |
-| `search-service` | Search projections and dashboard read models; Elasticsearch indexes `qhome_search_*` | `/v1/search`, `/v1/dashboards` | `Search`, `GetDashboardProjection` | None | All versioned domain event topics |
+| `search-service` | Projection catalog, rebuild checkpoints, and dashboard read models; `qhome_search` PostgreSQL plus Elasticsearch indexes `qhome_search_*` | `/v1/search`, `/v1/dashboards` | `Search`, `GetDashboardProjection` | None | All versioned domain event topics |
 
 The matrix deliberately has no cross-service SQL joins. A service that needs another context's display data consumes events into a local projection. A synchronous gRPC call is reserved for a small, bounded validation or command dependency, such as payment validating an invoice.
+
+Contract invariants for all services:
+
+- Transport metadata is authoritative for `RequestContext`. A command body must not override it; if a supplied `CommandMetadata.context` disagrees with authenticated transport metadata, the service rejects the command with `INVALID_ARGUMENT`.
+- The gateway authenticates the caller and private service links authenticate service identity. Services must still verify tenant, apartment, resource ownership, and scopes locally. Formatting checks on `x-tenant-id` or `x-apartment-id` are never authentication.
+- `event_id`, `event_type`, `event_version`, `aggregate_id`, `tenant_id`, `producer`, `occurred_at`, and `payload_schema` are required by the event producer validator even though proto3 scalar fields have no `required` keyword. Consumers deduplicate by `(producer, event_id)` and reject an empty event ID.
+- Event `payload` is encoded once according to `payload_schema`; a producer must not publish a second incompatible encoding of the same event. Incompatible payload changes use a new topic major version.
+- `PageRequest.page_size` is capped by service policy (default maximum 100), and `order_by` is resolved through a service-owned allowlist. It is never concatenated into SQL.
+
+### Dependency rule that prevents circular calls
+
+- The owner of an aggregate is the only service allowed to mutate it.
+- A synchronous gRPC edge points only to an authoritative validator and has one bounded hop per request. `payment-service -> billing-service` is valid; `billing-service -> payment-service` is forbidden.
+- Domain events flow from an owner to projections and side-effect services. Consumers do not synchronously call the producer during event handling.
+- `notification-service`, `search-service`, and `audit-service` are sinks/projections. They do not become authoritative dependencies of the domain services that publish events.
+- When a workflow spans multiple owners, the initiating service persists a saga state and outbox event. No distributed transaction or synchronous call chain is used to simulate one.
 
 ## 4. Dependency direction and data flow
 
@@ -218,7 +265,7 @@ The last diagram shows event observation, not a runtime call from audit to IAM. 
 
 ### Ingress and command flow
 
-1. Gateway authenticates the JWT, selects an authorized membership, enforces tenant/apartment context, attaches `x-correlation-id`, and routes the request.
+1. For `/v1/auth/**`, the gateway requires correlation and tenant-selection context, applies rate and body-size policy, and skips JWT verification. For other routes, it verifies the JWT, selects an authorized membership from signed claims, enforces tenant/apartment context, attaches `x-correlation-id`, and routes the request.
 2. The target service validates the DTO, authorization scope, idempotency key, and local aggregate version. It never asks another database for a join.
 3. The service commits the aggregate mutation and an outbox record in one PostgreSQL transaction.
 4. An outbox publisher sends the Protobuf event to Kafka. The event key is `<tenant_id>:<aggregate_type>:<aggregate_id>` so all events for one aggregate remain ordered within a partition.
@@ -242,7 +289,7 @@ The last diagram shows event observation, not a runtime call from audit to IAM. 
 - If Billing is unavailable during payment initiation, Payment returns a retryable `503` and does not create a provider attempt. If a provider callback arrives later, Payment stores it and retries the Billing event.
 - If Redis is unavailable, services fall back to the source database for correctness where possible. Redis-backed rate limiting may fail closed at the Gateway; Redis is never required to reconstruct business state.
 - If Elasticsearch is unavailable, writes remain valid and search becomes stale. Search indexes are rebuildable by replaying retained events or an explicit projection rebuild job.
-- No request performs more than one bounded synchronous cross-service hop. Set gRPC deadlines, propagate cancellation, and retry only idempotent calls on `UNAVAILABLE`/transient transport errors with jitter.
+- No request performs more than one bounded synchronous service-to-service hop. Gateway authentication is an edge policy, not a service call. Set gRPC deadlines, propagate cancellation, and retry only idempotent calls on `UNAVAILABLE`/transient transport errors with jitter.
 
 ## 5. Consistency, concurrency, and operational rules
 
@@ -255,3 +302,15 @@ The last diagram shows event observation, not a runtime call from audit to IAM. 
 - Propagate `traceparent`, `tracestate`, `x-correlation-id`, tenant ID, actor ID, and causation ID across HTTP, gRPC metadata, and Kafka headers. Do not put credentials or raw JWTs in event payloads or logs.
 - Use Prometheus metrics for request latency, error rate, Kafka lag, outbox age, consumer retry count, database pool saturation, Redis errors, and readiness failures. Sample traces at the edge, but retain all error traces.
 - Keep event schemas backward-compatible. Add fields with new field numbers, never reuse removed field numbers, and route incompatible changes to a new topic or major version.
+
+The shared `BaseMicroservice` runtime provides the common transport boundary: dynamic OpenTelemetry bootstrap before application modules load, validation pipes, REST problem responses, gRPC error normalization, context extraction, HTTP/gRPC/Kafka context injectors, and Kubernetes-compatible `/health/live` and `/health/ready` endpoints. Production bootstrap must supply `verifyRequestContext`; this hook validates the gateway proof or private mTLS/service identity and prevents a caller from turning well-formed headers into a forged tenant context. Resident handlers call the HTTP or gRPC apartment helper at the operation boundary; BQL-wide handlers do not.
+
+Readiness checks receive an `AbortSignal`, run with one shared in-flight evaluation, and become `503` as soon as shutdown starts. A check that ignores cancellation is still bounded from the process's perspective by the shutdown deadline, but its implementation must honor the signal to release database, Redis, Kafka, and gRPC resources promptly.
+
+## 6. Implementation references
+
+- NestJS gRPC transport: https://docs.nestjs.com/microservices/grpc
+- NestJS microservice configuration: https://docs.nestjs.com/microservices/basics
+- OpenTelemetry Node SDK bootstrap: https://opentelemetry.io/docs/languages/js/getting-started/nodejs/
+- Kubernetes liveness/readiness probes: https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/
+- Protocol Buffers language guide: https://protobuf.dev/programming-guides/proto3/

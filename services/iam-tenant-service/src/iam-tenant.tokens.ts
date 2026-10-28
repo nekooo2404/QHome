@@ -1,0 +1,16 @@
+export const IAM_TOKENS = {
+  Prisma: Symbol('IAM_PRISMA'),
+  Redis: Symbol('IAM_REDIS'),
+  AuthRepository: Symbol('IAM_AUTH_REPOSITORY'),
+  PasswordHasher: Symbol('IAM_PASSWORD_HASHER'),
+  TokenHasher: Symbol('IAM_TOKEN_HASHER'),
+  AccessTokenSigner: Symbol('IAM_ACCESS_TOKEN_SIGNER'),
+  JwksProvider: Symbol('IAM_JWKS_PROVIDER'),
+  RefreshTokenGenerator: Symbol('IAM_REFRESH_TOKEN_GENERATOR'),
+  RateLimiter: Symbol('IAM_RATE_LIMITER'),
+  PermissionCache: Symbol('IAM_PERMISSION_CACHE'),
+  IdGenerator: Symbol('IAM_ID_GENERATOR'),
+  Clock: Symbol('IAM_CLOCK'),
+  KafkaProducer: Symbol('IAM_KAFKA_PRODUCER'),
+  OutboxRelay: Symbol('IAM_OUTBOX_RELAY'),
+} as const;
