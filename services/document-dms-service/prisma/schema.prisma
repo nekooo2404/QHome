@@ -1,0 +1,246 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DOCUMENT_DMS_DATABASE_URL")
+}
+
+enum DocumentScopeType {
+  COMPANY
+  PROJECT
+  BUILDING
+  RESIDENT
+}
+
+enum DocumentStatus {
+  DRAFT
+  UPLOADING
+  AVAILABLE
+  ARCHIVED
+  DELETED
+  QUARANTINED
+}
+
+enum DocumentVersionStatus {
+  INITIATED
+  UPLOADING
+  VERIFYING
+  AVAILABLE
+  FAILED
+  REVOKED
+}
+
+enum UploadMode {
+  SINGLE
+  MULTIPART
+}
+
+enum MultipartUploadStatus {
+  INITIATED
+  COMPLETED
+  ABORTED
+  EXPIRED
+}
+
+enum AccessPrincipalType {
+  USER
+  ROLE
+  RESIDENT
+}
+
+enum AccessPolicyEffect {
+  ALLOW
+  DENY
+}
+
+enum DocumentPermission {
+  READ
+  DOWNLOAD
+  WRITE
+  SHARE
+}
+
+model Folder {
+  id          String            @id @default(uuid()) @db.Uuid
+  projectId   String?           @db.Uuid
+  buildingId  String?           @db.Uuid
+  apartmentId String?           @db.Uuid
+  scopeType   DocumentScopeType
+  parentId    String?           @db.Uuid
+  name        String            @db.VarChar(200)
+  path        String            @db.VarChar(2000)
+  createdBy   String            @db.Uuid
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+
+  parent    Folder?        @relation("FolderTree", fields: [parentId], references: [id], onDelete: Restrict)
+  children  Folder[]       @relation("FolderTree")
+  documents Document[]
+  policies  AccessPolicy[]
+
+  @@unique([projectId, parentId, name])
+  @@index([projectId, buildingId, apartmentId, scopeType])
+  @@index([parentId])
+  @@map("document_folders")
+}
+
+model Document {
+  id                   String            @id @default(uuid()) @db.Uuid
+  projectId            String?           @db.Uuid
+  buildingId           String?           @db.Uuid
+  apartmentId          String?           @db.Uuid
+  folderId             String?           @db.Uuid
+  scopeType            DocumentScopeType
+  title                String            @db.VarChar(300)
+  originalFileName     String            @db.VarChar(512)
+  status               DocumentStatus    @default(DRAFT)
+  currentVersionNumber Int               @default(0)
+  accessVersion        Int               @default(1)
+  createdBy            String            @db.Uuid
+  createdAt            DateTime          @default(now())
+  updatedAt            DateTime          @updatedAt
+  archivedAt           DateTime?
+  deletedAt            DateTime?
+
+  folder      Folder?              @relation(fields: [folderId], references: [id], onDelete: Restrict)
+  versions    DocumentVersion[]
+  policies    AccessPolicy[]
+  auditEvents DocumentAuditEvent[]
+
+  @@index([projectId, scopeType, status, updatedAt])
+  @@index([projectId, buildingId, apartmentId, status])
+  @@index([folderId, status, updatedAt])
+  @@map("documents")
+}
+
+model DocumentVersion {
+  id                 String                @id @default(uuid()) @db.Uuid
+  documentId         String                @db.Uuid
+  versionNumber      Int
+  objectKey          String                @unique @db.VarChar(1200)
+  objectVersionId    String?               @db.VarChar(256)
+  uploadMode         UploadMode
+  status             DocumentVersionStatus @default(INITIATED)
+  mimeType           String                @db.VarChar(160)
+  sizeBytes          BigInt
+  sha256             String                @db.Char(64)
+  etag               String?               @db.VarChar(256)
+  checksumSha256     String?               @db.VarChar(128)
+  magicBytesVerified Boolean               @default(false)
+  mimeTypeVerified   Boolean               @default(false)
+  checksumVerified   Boolean               @default(false)
+  createdBy          String                @db.Uuid
+  createdAt          DateTime              @default(now())
+  uploadedAt         DateTime?
+  publishedAt        DateTime?
+  failedAt           DateTime?
+  failureReason      String?               @db.VarChar(1000)
+
+  document        Document         @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  multipartUpload MultipartUpload?
+
+  @@unique([documentId, versionNumber])
+  @@index([documentId, status, versionNumber])
+  @@map("document_versions")
+}
+
+model MultipartUpload {
+  id                String                @id @default(uuid()) @db.Uuid
+  documentVersionId String                @unique @db.Uuid
+  providerUploadId  String                @unique @db.VarChar(512)
+  status            MultipartUploadStatus @default(INITIATED)
+  partSizeBytes     Int
+  expiresAt         DateTime
+  createdAt         DateTime              @default(now())
+  completedAt       DateTime?
+  abortedAt         DateTime?
+
+  documentVersion DocumentVersion       @relation(fields: [documentVersionId], references: [id], onDelete: Cascade)
+  parts           MultipartUploadPart[]
+
+  @@index([status, expiresAt])
+  @@map("document_multipart_uploads")
+}
+
+model MultipartUploadPart {
+  id                String   @id @default(uuid()) @db.Uuid
+  multipartUploadId String   @db.Uuid
+  partNumber        Int
+  etag              String   @db.VarChar(256)
+  checksumSha256    String?  @db.VarChar(128)
+  sizeBytes         Int
+  createdAt         DateTime @default(now())
+
+  upload MultipartUpload @relation(fields: [multipartUploadId], references: [id], onDelete: Cascade)
+
+  @@unique([multipartUploadId, partNumber])
+  @@index([multipartUploadId, partNumber])
+  @@map("document_multipart_parts")
+}
+
+model AccessPolicy {
+  id            String              @id @default(uuid()) @db.Uuid
+  documentId    String?             @db.Uuid
+  folderId      String?             @db.Uuid
+  projectId     String?             @db.Uuid
+  buildingId    String?             @db.Uuid
+  apartmentId   String?             @db.Uuid
+  principalType AccessPrincipalType
+  principalId   String?             @db.VarChar(160)
+  permission    DocumentPermission
+  effect        AccessPolicyEffect
+  createdBy     String              @db.Uuid
+  createdAt     DateTime            @default(now())
+  updatedAt     DateTime            @updatedAt
+
+  document Document? @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  folder   Folder?   @relation(fields: [folderId], references: [id], onDelete: Cascade)
+
+  @@index([documentId, permission, effect])
+  @@index([folderId, permission, effect])
+  @@index([projectId, buildingId, apartmentId, principalType, principalId])
+  @@map("document_access_policies")
+}
+
+model DocumentAuditEvent {
+  id            String   @id @default(uuid()) @db.Uuid
+  documentId    String   @db.Uuid
+  projectId     String?  @db.Uuid
+  actorUserId   String   @db.Uuid
+  action        String   @db.VarChar(160)
+  versionId     String?  @db.Uuid
+  correlationId String   @db.VarChar(160)
+  metadata      Json     @default("{}")
+  occurredAt    DateTime @default(now())
+
+  document Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@index([documentId, occurredAt])
+  @@index([projectId, occurredAt])
+  @@map("document_audit_events")
+}
+
+model OutboxEvent {
+  id            String    @id @default(uuid()) @db.Uuid
+  eventId       String    @unique @db.Uuid
+  projectId     String?   @db.Uuid
+  topic         String    @db.VarChar(200)
+  eventType     String    @db.VarChar(160)
+  aggregateType String    @db.VarChar(96)
+  aggregateId   String    @db.VarChar(160)
+  payload       Json
+  headers       Json      @default("{}")
+  occurredAt    DateTime  @default(now())
+  publishedAt   DateTime?
+  attempts      Int       @default(0)
+  nextAttemptAt DateTime  @default(now())
+  leasedUntil   DateTime?
+  leaseOwner    String?   @db.VarChar(128)
+  lastError     String?   @db.VarChar(2000)
+
+  @@index([publishedAt, nextAttemptAt, leasedUntil])
+  @@index([projectId, occurredAt])
+  @@map("outbox_events")
+}
