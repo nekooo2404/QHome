@@ -84,7 +84,7 @@ model AmenityTimeSlot {
   version       Int      @default(1)
   createdAt     DateTime @default(now())
 
-  amenity  Amenity         @relation(fields: [amenityId], references: [id], onDelete: Cascade)
+  amenity  Amenity          @relation(fields: [amenityId], references: [id], onDelete: Cascade)
   bookings AmenityBooking[]
 
   @@unique([amenityId, startsAt, endsAt])
@@ -120,19 +120,19 @@ model AmenityBooking {
 }
 
 model RegistrationRequest {
-  id            String           @id @default(uuid()) @db.Uuid
-  projectId     String           @db.Uuid
-  residentId    String           @db.Uuid
-  apartmentId   String           @db.Uuid
-  type          RegistrationType
-  status        WorkflowStatus  @default(DRAFT)
-  idempotencyKey String          @db.VarChar(160)
-  payload       Json
-  submittedAt   DateTime?
-  completedAt   DateTime?
-  createdAt     DateTime         @default(now())
-  updatedAt     DateTime         @updatedAt
-  version       Int              @default(1)
+  id             String           @id @default(uuid()) @db.Uuid
+  projectId      String           @db.Uuid
+  residentId     String           @db.Uuid
+  apartmentId    String           @db.Uuid
+  type           RegistrationType
+  status         WorkflowStatus   @default(DRAFT)
+  idempotencyKey String           @db.VarChar(160)
+  payload        Json
+  submittedAt    DateTime?
+  completedAt    DateTime?
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+  version        Int              @default(1)
 
   approvals ApprovalAction[]
   passes    SecurityPass[]
@@ -144,13 +144,13 @@ model RegistrationRequest {
 }
 
 model ApprovalAction {
-  id           String           @id @default(uuid()) @db.Uuid
-  requestId    String           @db.Uuid
-  step         Int
-  approverId   String           @db.Uuid
-  decision     ApprovalDecision
-  comment      String?          @db.VarChar(2000)
-  decidedAt    DateTime         @default(now())
+  id         String           @id @default(uuid()) @db.Uuid
+  requestId  String           @db.Uuid
+  step       Int
+  approverId String           @db.Uuid
+  decision   ApprovalDecision
+  comment    String?          @db.VarChar(2000)
+  decidedAt  DateTime         @default(now())
 
   request RegistrationRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
 
@@ -160,17 +160,17 @@ model ApprovalAction {
 }
 
 model SecurityPass {
-  id             String     @id @default(uuid()) @db.Uuid
-  projectId      String     @db.Uuid
-  requestId      String     @db.Uuid
-  jti            String     @unique @db.VarChar(160)
-  payloadHash    String     @db.Char(64)
-  validFrom      DateTime
-  expiresAt      DateTime
-  status         PassStatus @default(ACTIVE)
-  usedAt         DateTime?
-  revokedAt      DateTime?
-  createdAt      DateTime   @default(now())
+  id          String     @id @default(uuid()) @db.Uuid
+  projectId   String     @db.Uuid
+  requestId   String     @db.Uuid
+  jti         String     @unique @db.VarChar(160)
+  payloadHash String     @db.Char(64)
+  validFrom   DateTime
+  expiresAt   DateTime
+  status      PassStatus @default(ACTIVE)
+  usedAt      DateTime?
+  revokedAt   DateTime?
+  createdAt   DateTime   @default(now())
 
   request RegistrationRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
 
@@ -180,23 +180,23 @@ model SecurityPass {
 }
 
 model OutboxEvent {
-  id            String   @id @default(uuid()) @db.Uuid
-  projectId     String?  @db.Uuid
-  eventId       String   @unique @db.VarChar(160)
-  topic         String   @db.VarChar(200)
-  eventType     String   @db.VarChar(160)
-  aggregateType String   @db.VarChar(96)
-  aggregateId   String   @db.VarChar(160)
+  id            String    @id @default(uuid()) @db.Uuid
+  projectId     String?   @db.Uuid
+  eventId       String    @unique @db.VarChar(160)
+  topic         String    @db.VarChar(200)
+  eventType     String    @db.VarChar(160)
+  aggregateType String    @db.VarChar(96)
+  aggregateId   String    @db.VarChar(160)
   payload       Json
-  headers       Json     @default("{}")
-  status        String   @default("PENDING") @db.VarChar(32)
-  attempts      Int      @default(0)
-  occurredAt    DateTime @default(now())
-  nextAttemptAt DateTime @default(now())
+  headers       Json      @default("{}")
+  status        String    @default("PENDING") @db.VarChar(32)
+  attempts      Int       @default(0)
+  occurredAt    DateTime  @default(now())
+  nextAttemptAt DateTime  @default(now())
   publishedAt   DateTime?
   leasedUntil   DateTime?
-  leaseOwner    String?  @db.VarChar(128)
-  lastError     String?  @db.VarChar(2000)
+  leaseOwner    String?   @db.VarChar(128)
+  lastError     String?   @db.VarChar(2000)
 
   @@index([status, nextAttemptAt, leasedUntil])
   @@index([projectId, occurredAt])

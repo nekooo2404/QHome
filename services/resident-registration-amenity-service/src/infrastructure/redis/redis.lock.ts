@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { DistributedLock, RedisLockClient } from '../../application/ports';
+import { LockExpiredError } from '../../domain/booking';
 
 const RELEASE = "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end";
 
@@ -10,6 +11,7 @@ export class RedisRedlock implements DistributedLock {
     const token = randomUUID();
     const result = await this.redis.set(key, token, 'NX', 'PX', ttlMs);
     if (!result) return null;
-    return { release: async () => { await this.redis.eval(RELEASE, 1, key, token); } };
+    const expiresAt = Date.now() + ttlMs;
+    return { expiresAt, remainingTtl: () => Math.max(0, expiresAt - Date.now()), assertRemaining: (minimumMs: number) => { if (expiresAt - Date.now() < minimumMs) throw new LockExpiredError(); }, release: async () => { await this.redis.eval(RELEASE, 1, key, token); } };
   }
 }

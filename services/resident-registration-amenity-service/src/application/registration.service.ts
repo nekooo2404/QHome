@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { assertWorkflowTransition, WorkflowStatus } from '../domain/booking';
+import { WorkflowStatus } from '../domain/booking';
 import { SecurityQrPassService } from '../domain/qr-pass';
 import { EventPublisher, RegistrationRepository } from './ports';
 
@@ -10,21 +10,22 @@ export class RegistrationService {
     return this.repository.create(input);
   }
 
-  transition(input: { projectId: string; requestId: string; currentStatus: WorkflowStatus; expectedVersion: number; nextStatus: WorkflowStatus; approverId?: string; comment?: string }) {
-    assertWorkflowTransition(input.currentStatus, input.nextStatus, input.approverId);
+  transition(input: { projectId: string; requestId: string; apartmentId?: string; currentStatus?: WorkflowStatus; expectedVersion: number; nextStatus: WorkflowStatus; approverId?: string; comment?: string }) {
     return this.repository.transition(input);
   }
 
-  async issuePass(input: { projectId: string; requestId: string; residentId: string; type: string; ttlMs: number }) {
+  async issuePass(input: { projectId: string; apartmentId: string; requestId: string; residentId: string; type: string; ttlMs: number }) {
+    await this.repository.assertRegistrationApproved({ projectId: input.projectId, requestId: input.requestId, residentId: input.residentId, apartmentId: input.apartmentId });
     const issued = this.passes.issue({ projectId: input.projectId, requestId: input.requestId, residentId: input.residentId, type: input.type, ttlMs: input.ttlMs });
     const payloadHash = createHash('sha256').update(issued.token, 'utf8').digest('hex');
-    await this.repository.issueSecurityPass({ projectId: input.projectId, requestId: input.requestId, residentId: input.residentId, type: input.type, payloadHash, validFrom: new Date(issued.payload.validFrom), expiresAt: new Date(issued.payload.expiresAt), jti: issued.payload.jti });
+    await this.repository.issueSecurityPass({ projectId: input.projectId, apartmentId: input.apartmentId, requestId: input.requestId, residentId: input.residentId, type: input.type, payloadHash, validFrom: new Date(issued.payload.validFrom), expiresAt: new Date(issued.payload.expiresAt), jti: issued.payload.jti });
     return issued;
   }
 
-  async verifyPass(token: string) {
+  async verifyPass(token: string, projectId: string) {
     const payload = this.passes.verify(token);
-    if (!(await this.repository.isPassUsable(payload.jti, new Date()))) throw new Error('Security pass is revoked or already used');
+    if (payload.projectId !== projectId) throw new Error('Security pass tenant mismatch');
+    if (!(await this.repository.consumeSecurityPass(payload.jti, new Date()))) throw new Error('Security pass is revoked, expired, or already used');
     return payload;
   }
 

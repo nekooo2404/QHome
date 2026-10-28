@@ -1,6 +1,11 @@
 export type BookingStatus = 'HELD' | 'PENDING_PAYMENT' | 'CONFIRMED' | 'CANCELLED' | 'EXPIRED' | 'COMPLETED';
 export type WorkflowStatus = 'DRAFT' | 'SUBMITTED' | 'UNDER_REVIEW' | 'APPROVED' | 'REJECTED' | 'CANCELLED' | 'COMPLETED';
 
+export class LockExpiredError extends Error {
+  readonly code = 'DISTRIBUTED_LOCK_EXPIRED';
+  constructor() { super('Distributed booking lock no longer has enough validity'); }
+}
+
 export function assertBookingTransition(current: BookingStatus, next: BookingStatus): void {
   const allowed: Record<BookingStatus, BookingStatus[]> = {
     HELD: ['PENDING_PAYMENT', 'CONFIRMED', 'CANCELLED', 'EXPIRED'],
