@@ -1,0 +1,177 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("WORKFORCE_KPI_DATABASE_URL")
+}
+
+enum TaskSource {
+  MANUAL
+  MAINTENANCE_CHECKLIST
+  MAINTENANCE_WORK_ORDER
+  RESIDENT_TICKET
+}
+
+enum TaskStatus {
+  CREATED
+  ASSIGNED
+  ACCEPTED
+  IN_PROGRESS
+  SUBMITTED
+  COMPLETED
+  REJECTED
+  OVERDUE
+  CANCELLED
+}
+
+enum WorkflowActorType {
+  EMPLOYEE
+  MANAGER
+  SYSTEM
+  RESIDENT
+}
+
+enum MetricScope {
+  EMPLOYEE
+  DEPARTMENT
+}
+
+model Task {
+  id               String     @id @default(uuid()) @db.Uuid
+  projectId        String     @db.Uuid
+  buildingId       String?    @db.Uuid
+  departmentId     String?    @db.Uuid
+  assigneeId       String?    @db.Uuid
+  title            String     @db.VarChar(300)
+  description      String?    @db.VarChar(4000)
+  source           TaskSource
+  sourceEventId    String?    @db.VarChar(160)
+  sourceEntityId   String?    @db.VarChar(160)
+  deduplicationKey String     @db.VarChar(240)
+  difficultyWeight Decimal    @default(1) @db.Decimal(8, 4)
+  deadlineAt       DateTime
+  status           TaskStatus @default(CREATED)
+  version          Int        @default(1)
+  assignedAt       DateTime?
+  acceptedAt       DateTime?
+  startedAt        DateTime?
+  submittedAt      DateTime?
+  completedAt      DateTime?
+  cancelledAt      DateTime?
+  rating           Decimal?   @db.Decimal(4, 2)
+  ratingComment    String?    @db.VarChar(2000)
+  createdBy        String     @db.Uuid
+  createdAt        DateTime   @default(now())
+  updatedAt        DateTime   @updatedAt
+
+  workflowLogs TaskWorkflowLog[]
+  ratings      TaskRating[]
+
+  @@unique([projectId, deduplicationKey])
+  @@index([projectId, status, deadlineAt])
+  @@index([projectId, assigneeId, status, deadlineAt])
+  @@index([projectId, departmentId, status, deadlineAt])
+  @@map("workforce_tasks")
+}
+
+model TaskWorkflowLog {
+  id            String            @id @default(uuid()) @db.Uuid
+  taskId        String            @db.Uuid
+  projectId     String            @db.Uuid
+  fromStatus    TaskStatus?
+  toStatus      TaskStatus
+  actorId       String            @db.Uuid
+  actorType     WorkflowActorType
+  reason        String?           @db.VarChar(2000)
+  correlationId String            @db.VarChar(160)
+  occurredAt    DateTime          @default(now())
+
+  task Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@index([projectId, taskId, occurredAt])
+  @@index([projectId, toStatus, occurredAt])
+  @@map("task_workflow_logs")
+}
+
+model TaskRating {
+  id        String   @id @default(uuid()) @db.Uuid
+  taskId    String   @db.Uuid
+  projectId String   @db.Uuid
+  ratedBy   String   @db.Uuid
+  score     Decimal  @db.Decimal(4, 2)
+  comment   String?  @db.VarChar(2000)
+  createdAt DateTime @default(now())
+
+  task Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@unique([taskId, ratedBy])
+  @@index([projectId, createdAt])
+  @@map("task_ratings")
+}
+
+model EmployeeKpiMetrics {
+  id                       String      @id @default(uuid()) @db.Uuid
+  projectId                String      @db.Uuid
+  departmentId             String?     @db.Uuid
+  scopeType                MetricScope
+  scopeId                  String      @db.Uuid
+  periodStart              DateTime    @db.Date
+  periodEnd                DateTime    @db.Date
+  assignedCount            Int         @default(0)
+  completedCount           Int         @default(0)
+  onTimeCount              Int         @default(0)
+  overdueCount             Int         @default(0)
+  totalCompletionMinutes   BigInt      @default(0)
+  totalRating              Decimal     @default(0) @db.Decimal(18, 6)
+  weightedScore            Decimal     @default(0) @db.Decimal(18, 6)
+  completionRate           Decimal     @default(0) @db.Decimal(10, 6)
+  onTimeRate               Decimal     @default(0) @db.Decimal(10, 6)
+  averageCompletionMinutes Decimal     @default(0) @db.Decimal(18, 6)
+  averageRating            Decimal     @default(0) @db.Decimal(10, 6)
+  version                  Int         @default(1)
+  updatedAt                DateTime    @updatedAt
+
+  @@unique([projectId, scopeType, scopeId, periodStart])
+  @@index([projectId, periodStart, scopeType, weightedScore])
+  @@index([projectId, departmentId, periodStart])
+  @@map("employee_kpi_metrics")
+}
+
+model InboxEvent {
+  id          String    @id @default(uuid()) @db.Uuid
+  eventId     String    @unique @db.VarChar(160)
+  eventType   String    @db.VarChar(160)
+  status      String    @default("PROCESSED") @db.VarChar(32)
+  attempts    Int       @default(0)
+  receivedAt  DateTime  @default(now())
+  processedAt DateTime?
+  lastError   String?   @db.VarChar(2000)
+
+  @@index([status, receivedAt])
+  @@map("workforce_inbox_events")
+}
+
+model OutboxEvent {
+  id            String    @id @default(uuid()) @db.Uuid
+  projectId     String?   @db.Uuid
+  eventId       String    @unique @db.Uuid
+  topic         String    @default("qhome.workforce.events.v1") @db.VarChar(200)
+  eventType     String    @db.VarChar(160)
+  aggregateType String    @db.VarChar(96)
+  aggregateId   String    @db.VarChar(160)
+  payload       Json
+  headers       Json      @default("{}")
+  occurredAt    DateTime  @default(now())
+  publishedAt   DateTime?
+  attempts      Int       @default(0)
+  nextAttemptAt DateTime  @default(now())
+  leasedUntil   DateTime?
+  leaseOwner    String?   @db.VarChar(128)
+  lastError     String?   @db.VarChar(2000)
+
+  @@index([publishedAt, nextAttemptAt, leasedUntil])
+  @@index([projectId, occurredAt])
+  @@map("workforce_outbox_events")
+}

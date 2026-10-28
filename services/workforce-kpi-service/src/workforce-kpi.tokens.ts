@@ -1,0 +1,1 @@
+export const WORKFORCE_KPI_TOKENS = { Prisma: Symbol('WORKFORCE_KPI_PRISMA'), Repository: Symbol('WORKFORCE_KPI_REPOSITORY'), Redis: Symbol('WORKFORCE_KPI_REDIS'), Lock: Symbol('WORKFORCE_KPI_LOCK') } as const;
