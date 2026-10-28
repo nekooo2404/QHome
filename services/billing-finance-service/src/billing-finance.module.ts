@@ -3,6 +3,7 @@ import { PrismaClient } from '@prisma/client';
 import { PaymentService } from './application/payment.service';
 import { PaymentWebhookService } from './application/webhook.service';
 import { ReportService } from './application/report.service';
+import { InvoiceIssueWorker } from './application/invoice-issue.worker';
 import { BillingFinanceHttpController } from './interfaces/http/billing-finance.http.controller';
 import { PrismaBillingRepository } from './infrastructure/prisma/prisma.billing.repository';
 import { RedisIdempotencyGate } from './infrastructure/redis/redis.idempotency';
@@ -10,11 +11,14 @@ import { createBillingRedis } from './infrastructure/redis/redis.cluster.client'
 import { BILLING_TOKENS } from './billing-finance.tokens';
 import { createBillingKafkaProducer } from './infrastructure/messaging/billing.kafka.client';
 import { BillingOutboxRelay, BillingOutboxScheduler } from './infrastructure/messaging/billing.outbox.relay';
+import { MarketplacePaymentService } from './application/marketplace-payment.service';
+import { PrismaMarketplacePaymentRepository } from './infrastructure/prisma/prisma.marketplace-payment.repository';
+import { BillingMarketplaceGrpcController } from './interfaces/grpc/billing-marketplace.grpc.controller';
 
 function requiredEnv(name: string): string { const value = process.env[name]; if (!value) throw new Error(name + ' is required'); return value; }
 
 @Module({
-  controllers: [BillingFinanceHttpController],
+  controllers: [BillingFinanceHttpController, BillingMarketplaceGrpcController],
   providers: [
     { provide: BILLING_TOKENS.Prisma, useFactory: () => new PrismaClient({ datasources: { db: { url: requiredEnv('BILLING_FINANCE_DATABASE_URL') } } }) },
     { provide: BILLING_TOKENS.Redis, useFactory: createBillingRedis },
@@ -27,6 +31,9 @@ function requiredEnv(name: string): string { const value = process.env[name]; if
     { provide: PaymentService, useFactory: (repository, accounts, idempotency) => new PaymentService(repository, accounts, idempotency), inject: [BILLING_TOKENS.Repository, BILLING_TOKENS.Repository, BILLING_TOKENS.Idempotency] },
     { provide: PaymentWebhookService, useFactory: (payments) => new PaymentWebhookService(payments, { BANK: requiredEnv('BANK_WEBHOOK_SECRET'), WALLET: requiredEnv('WALLET_WEBHOOK_SECRET') }), inject: [PaymentService] },
     { provide: ReportService, useFactory: (repository) => new ReportService(repository), inject: [BILLING_TOKENS.Repository] },
+    { provide: InvoiceIssueWorker, useFactory: (repository) => new InvoiceIssueWorker(repository), inject: [BILLING_TOKENS.Repository] },
+    { provide: BILLING_TOKENS.MarketplacePaymentRepository, useFactory: (prisma: PrismaClient) => new PrismaMarketplacePaymentRepository(prisma), inject: [BILLING_TOKENS.Prisma] },
+    { provide: MarketplacePaymentService, useFactory: (repository) => new MarketplacePaymentService(repository), inject: [BILLING_TOKENS.MarketplacePaymentRepository] },
   ],
 })
 export class BillingFinanceModule {}

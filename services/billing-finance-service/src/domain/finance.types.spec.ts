@@ -19,4 +19,12 @@ describe('billing finance invariants', () => {
   it('rejects an unbalanced ledger', () => {
     assert.throws(() => assertBalancedLedger([{ accountCode: 'CASH', side: 'DEBIT', amount: new Decimal('10'), currencyCode: 'VND', description: 'cash' }]), /at least two/);
   });
+
+  it('balances a wallet-only payment without a zero receivable line', () => {
+    const lines = [
+      { accountCode: 'BANK_CASH', side: 'DEBIT' as const, amount: new Decimal('150'), currencyCode: 'VND', description: 'cash' },
+      { accountCode: 'APARTMENT_WALLET_LIABILITY', side: 'CREDIT' as const, amount: new Decimal('150'), currencyCode: 'VND', description: 'wallet surplus' },
+    ];
+    assert.doesNotThrow(() => assertBalancedLedger(lines));
+  });
 });

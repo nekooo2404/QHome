@@ -4,6 +4,7 @@ import { InvoiceSnapshot, LedgerTransactionInput, PaymentApplicationPlan } from 
 export interface IdempotencyGate {
   begin(scope: string, key: string, requestHash: string, ttlSeconds: number): Promise<{ acquired: boolean; cachedResponse?: { statusCode: number; body: unknown } }>;
   complete(scope: string, key: string, requestHash: string, statusCode: number, body: unknown): Promise<void>;
+  abort(scope: string, key: string, requestHash: string): Promise<void>;
 }
 
 export interface DistributedLock {
@@ -25,8 +26,6 @@ export interface PaymentRepository {
     providerOccurredAt?: Date;
     rawReference?: string;
     webhookReceipt?: { timestamp: Date; signature: string; payloadHash: string };
-    plan: PaymentApplicationPlan;
-    ledger: LedgerTransactionInput;
   }): Promise<{ paymentId: string; appliedAmount: Decimal; surplusAmount: Decimal; invoiceIds: string[] }>;
   loadOpenInvoicesForApartment(projectId: string, apartmentId: string, currencyCode: string): Promise<InvoiceSnapshot[]>;
   findOutstandingInvoices(projectId: string, apartmentIds: string[], cursor?: string, limit?: number): Promise<{ items: InvoiceSnapshot[]; nextCursor?: string }>;

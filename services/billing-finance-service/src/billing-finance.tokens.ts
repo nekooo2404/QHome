@@ -8,4 +8,5 @@ export const BILLING_TOKENS = {
   Queue: Symbol('BILLING_QUEUE'),
   KafkaProducer: Symbol('BILLING_KAFKA_PRODUCER'),
   OutboxRelay: Symbol('BILLING_OUTBOX_RELAY'),
+  MarketplacePaymentRepository: Symbol('BILLING_MARKETPLACE_PAYMENT_REPOSITORY'),
 } as const;

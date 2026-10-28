@@ -1,19 +1,33 @@
 import { Prisma, PrismaClient } from '@prisma/client';
+import { randomUUID } from 'node:crypto';
 import Decimal from 'decimal.js';
 import { InvoiceIssueRepository, LedgerAccountRepository, PaymentRepository, ReportRepository } from '../../application/ports';
-import { InvoiceSnapshot, LedgerTransactionInput, PaymentApplicationPlan, planPaymentApplication } from '../../domain/finance.types';
+import { assertBalancedLedger, InvoiceSnapshot, LedgerLineInput, planPaymentApplication } from '../../domain/finance.types';
 
 type Tx = Prisma.TransactionClient;
 
 const asDecimal = (value: unknown): Decimal => new Decimal(String(value));
-const isSerializationConflict = (error: unknown): boolean => (error as { code?: string }).code === 'P2034';
+const isSerializationConflict = (error: unknown): boolean => {
+  const value = error as { code?: string; meta?: { code?: string }; message?: string };
+  return value.code === 'P2034' || value.code === '40001' || value.code === '40P01' || value.meta?.code === '40001' || value.meta?.code === '40P01' || /serialization|deadlock detected|could not serialize/iu.test(value.message ?? '');
+};
+
+async function backoff(attempt: number): Promise<void> {
+  const delay = Math.min(1000, 25 * (2 ** attempt)) + Math.floor(Math.random() * 25);
+  await new Promise((resolve) => setTimeout(resolve, delay));
+}
 
 export class PrismaBillingRepository implements PaymentRepository, InvoiceIssueRepository, LedgerAccountRepository, ReportRepository {
   constructor(private readonly prisma: PrismaClient) {}
 
   async loadOpenInvoicesForApartment(projectId: string, apartmentId: string, currencyCode: string): Promise<InvoiceSnapshot[]> {
-    const rows = await this.prisma.invoice.findMany({ where: { projectId, apartmentId, currencyCode, status: { in: ['ISSUED', 'PARTIALLY_PAID', 'OVERDUE'] } }, orderBy: [{ dueAt: 'asc' }, { createdAt: 'asc' }, { id: 'asc' }] });
-    return rows.map((row) => ({ id: row.id, projectId: row.projectId, apartmentId: row.apartmentId, currencyCode: row.currencyCode, totalAmount: asDecimal(row.totalAmount), paidAmount: asDecimal(row.paidAmount), status: row.status as InvoiceSnapshot['status'] }));
+    const rows = await this.prisma.$queryRawUnsafe<Array<{ id: string; project_id: string; apartment_id: string; currency_code: string; total_amount: Prisma.Decimal; paid_amount: Prisma.Decimal; status: string }>>(
+      `SELECT id, project_id, apartment_id, currency_code, total_amount, paid_amount, status FROM invoices WHERE project_id = $1::uuid AND apartment_id = $2::uuid AND currency_code = $3 AND status IN ('ISSUED', 'PARTIALLY_PAID', 'OVERDUE') ORDER BY due_at ASC, created_at ASC, id ASC FOR UPDATE`,
+      projectId,
+      apartmentId,
+      currencyCode,
+    );
+    return rows.map((row) => ({ id: row.id, projectId: row.project_id, apartmentId: row.apartment_id, currencyCode: row.currency_code, totalAmount: asDecimal(row.total_amount), paidAmount: asDecimal(row.paid_amount), status: row.status as InvoiceSnapshot['status'] }));
   }
 
   async applyPayment(input: {
@@ -30,14 +44,13 @@ export class PrismaBillingRepository implements PaymentRepository, InvoiceIssueR
     providerOccurredAt?: Date;
     rawReference?: string;
     webhookReceipt?: { timestamp: Date; signature: string; payloadHash: string };
-    plan: PaymentApplicationPlan;
-    ledger: LedgerTransactionInput;
   }): Promise<{ paymentId: string; appliedAmount: Decimal; surplusAmount: Decimal; invoiceIds: string[] }> {
-    for (let attempt = 0; attempt < 3; attempt += 1) {
+    for (let attempt = 0; attempt < 5; attempt += 1) {
       try {
         return await this.prisma.$transaction((tx) => this.applyPaymentTransaction(tx, input), { isolationLevel: Prisma.TransactionIsolationLevel.Serializable, maxWait: 5000, timeout: 15000 });
       } catch (error) {
-        if (!isSerializationConflict(error) || attempt === 2) throw error;
+        if (!isSerializationConflict(error) || attempt === 4) throw error;
+        await backoff(attempt);
       }
     }
     throw new Error('Payment transaction retry budget exhausted');
@@ -47,7 +60,6 @@ export class PrismaBillingRepository implements PaymentRepository, InvoiceIssueR
     projectId: string; apartmentId: string; residentId?: string; provider: string; providerTransactionId: string; providerEventId?: string; idempotencyKey: string;
     channel: 'BANK_TRANSFER' | 'E_WALLET' | 'VIETQR' | 'CASH'; currencyCode: string; grossAmount: Decimal; providerOccurredAt?: Date; rawReference?: string;
     webhookReceipt?: { timestamp: Date; signature: string; payloadHash: string };
-    plan: PaymentApplicationPlan; ledger: LedgerTransactionInput;
   }) {
     const existing = await tx.paymentTransaction.findUnique({ where: { provider_providerTransactionId: { provider: input.provider, providerTransactionId: input.providerTransactionId } }, include: { allocations: true } });
     if (existing) {
@@ -55,17 +67,24 @@ export class PrismaBillingRepository implements PaymentRepository, InvoiceIssueR
       return { paymentId: existing.id, appliedAmount: asDecimal(existing.appliedAmount), surplusAmount: asDecimal(existing.surplusAmount), invoiceIds: existing.allocations.map((allocation) => allocation.invoiceId) };
     }
 
-    const ids = input.plan.allocations.map((allocation) => allocation.invoiceId);
-    const lockedRows = ids.length === 0 ? [] : await tx.$queryRawUnsafe<Array<{ id: string; total_amount: Prisma.Decimal; paid_amount: Prisma.Decimal; status: string }>>(
-      `SELECT id, total_amount, paid_amount, status FROM invoices WHERE project_id = $1::uuid AND apartment_id = $2::uuid AND id = ANY($3::uuid[]) AND status IN ('ISSUED', 'PARTIALLY_PAID', 'OVERDUE') ORDER BY due_at ASC, created_at ASC, id ASC FOR UPDATE`,
+    const lockedRows = await tx.$queryRawUnsafe<Array<{ id: string; total_amount: Prisma.Decimal; paid_amount: Prisma.Decimal; status: string }>>(
+      `SELECT id, total_amount, paid_amount, status FROM invoices WHERE project_id = $1::uuid AND apartment_id = $2::uuid AND currency_code = $3 AND status IN ('ISSUED', 'PARTIALLY_PAID', 'OVERDUE') ORDER BY due_at ASC, created_at ASC, id ASC FOR UPDATE`,
       input.projectId,
       input.apartmentId,
-      ids,
+      input.currencyCode,
     );
-    if (lockedRows.length !== ids.length) throw new Error('One or more invoices are not payable in this apartment');
     const invoices = lockedRows.map((row) => ({ id: row.id, projectId: input.projectId, apartmentId: input.apartmentId, currencyCode: input.currencyCode, totalAmount: asDecimal(row.total_amount), paidAmount: asDecimal(row.paid_amount), status: row.status as InvoiceSnapshot['status'] }));
     const verified = planPaymentApplication(input.grossAmount, invoices);
-    if (!verified.appliedAmount.eq(input.plan.appliedAmount) || !verified.surplus.eq(input.plan.surplus)) throw new Error('Payment allocation changed while processing');
+    const accountRows = await tx.ledgerAccount.findMany({ where: { projectId: input.projectId, currencyCode: input.currencyCode, code: { in: ['BANK_CASH', 'ACCOUNTS_RECEIVABLE', 'APARTMENT_WALLET_LIABILITY'] }, isActive: true } });
+    const accountIds = new Map(accountRows.map((account) => [account.code, account.id]));
+    if (accountIds.size !== 3) throw new Error('Required ledger accounts are unavailable');
+    const lines: LedgerLineInput[] = [
+      { accountCode: 'BANK_CASH', side: 'DEBIT', amount: input.grossAmount, currencyCode: input.currencyCode, apartmentId: input.apartmentId, description: 'Payment received' },
+      ...(verified.appliedAmount.isPositive() ? [{ accountCode: 'ACCOUNTS_RECEIVABLE', side: 'CREDIT' as const, amount: verified.appliedAmount, currencyCode: input.currencyCode, apartmentId: input.apartmentId, description: 'Invoice settlement' }] : []),
+      ...(verified.surplus.isPositive() ? [{ accountCode: 'APARTMENT_WALLET_LIABILITY', side: 'CREDIT' as const, amount: verified.surplus, currencyCode: input.currencyCode, apartmentId: input.apartmentId, description: 'Payment surplus credited to apartment wallet' }] : []),
+    ];
+    assertBalancedLedger(lines);
+    const ledger = { projectId: input.projectId, referenceType: 'PAYMENT', referenceId: `${input.provider}:${input.providerTransactionId}`, description: 'Payment settlement', lines };
 
     const payment = await tx.paymentTransaction.create({ data: {
       projectId: input.projectId, apartmentId: input.apartmentId, residentId: input.residentId, provider: input.provider, providerTransactionId: input.providerTransactionId, idempotencyKey: input.idempotencyKey,
@@ -91,23 +110,17 @@ export class PrismaBillingRepository implements PaymentRepository, InvoiceIssueR
       await tx.walletEntry.create({ data: { walletId: wallet.id, paymentId: payment.id, type: 'PAYMENT_SURPLUS', amount: verified.surplus.toFixed(12), balanceAfter: nextBalance.toFixed(12), description: 'Payment surplus' } });
     }
 
-    const codes = Array.from(new Set(input.ledger.lines.map((line) => line.accountCode)));
-    const accounts = await tx.ledgerAccount.findMany({ where: { projectId: input.projectId, currencyCode: input.currencyCode, code: { in: codes }, isActive: true } });
-    const accountIds = new Map(accounts.map((account) => [account.code, account.id]));
-    if (accountIds.size !== codes.length) throw new Error('Ledger account is missing');
-    const ledger = await tx.ledgerTransaction.create({ data: { projectId: input.projectId, referenceType: input.ledger.referenceType, referenceId: input.ledger.referenceId, description: input.ledger.description } });
-    await tx.ledgerEntry.createMany({ data: input.ledger.lines.map((line) => ({ transactionId: ledger.id, accountId: accountIds.get(line.accountCode)!, side: line.side, amount: line.amount.toFixed(12), currencyCode: line.currencyCode, apartmentId: line.apartmentId, description: line.description })) });
+    const ledgerTransaction = await tx.ledgerTransaction.create({ data: { projectId: input.projectId, referenceType: ledger.referenceType, referenceId: ledger.referenceId, description: ledger.description } });
+    await tx.ledgerEntry.createMany({ data: ledger.lines.map((line) => ({ transactionId: ledgerTransaction.id, accountId: accountIds.get(line.accountCode)!, side: line.side, amount: line.amount.toFixed(12), currencyCode: line.currencyCode, apartmentId: line.apartmentId, description: line.description })) });
     await tx.outboxEvent.create({ data: { eventId: payment.id + ':payment-applied', projectId: input.projectId, topic: 'qhome.billing.events.v1', eventType: 'billing.payment.applied.v1', aggregateType: 'payment', aggregateId: payment.id, payload: { paymentId: payment.id, appliedAmount: verified.appliedAmount.toFixed(), surplusAmount: verified.surplus.toFixed() }, headers: {} } });
     return { paymentId: payment.id, appliedAmount: verified.appliedAmount, surplusAmount: verified.surplus, invoiceIds: verified.allocations.map((allocation) => allocation.invoiceId) };
   }
 
   private async lockOrCreateWallet(tx: Tx, projectId: string, apartmentId: string, currencyCode: string) {
-    const existing = await tx.apartmentWallet.findUnique({ where: { projectId_apartmentId_currencyCode: { projectId, apartmentId, currencyCode } } });
-    if (existing) {
-      await tx.$queryRawUnsafe('SELECT id FROM apartment_wallets WHERE id = $1::uuid FOR UPDATE', existing.id);
-      return existing;
-    }
-    return tx.apartmentWallet.create({ data: { projectId, apartmentId, currencyCode, balance: '0' } });
+    await tx.$executeRawUnsafe('INSERT INTO apartment_wallets (id, project_id, apartment_id, currency_code, balance, version) VALUES ($1::uuid, $2::uuid, $3::uuid, $4, 0, 1) ON CONFLICT (project_id, apartment_id, currency_code) DO NOTHING', randomUUID(), projectId, apartmentId, currencyCode);
+    const rows = await tx.$queryRawUnsafe<Array<{ id: string; balance: Prisma.Decimal; version: number }>>('SELECT id, balance, version FROM apartment_wallets WHERE project_id = $1::uuid AND apartment_id = $2::uuid AND currency_code = $3 FOR UPDATE', projectId, apartmentId, currencyCode);
+    if (!rows[0]) throw new Error('Apartment wallet could not be created');
+    return rows[0];
   }
 
   async issueBatch(input: {
@@ -127,29 +140,43 @@ export class PrismaBillingRepository implements PaymentRepository, InvoiceIssueR
       pricingSnapshot: Record<string, unknown>;
     }>;
   }): Promise<{ invoiceIds: string[] }> {
-    return this.prisma.$transaction(async (tx) => {
+    return this.withSerializableRetry(async (tx) => {
       const period = await tx.billingPeriod.findUnique({ where: { id: input.billingPeriodId } });
       if (!period || period.projectId !== input.projectId || !['OPEN', 'CALCULATING'].includes(period.status)) throw new Error('Billing period is not open for invoice issuance');
       const byApartment = new Map<string, typeof input.items>();
       for (const item of input.items) byApartment.set(item.apartmentId, [...(byApartment.get(item.apartmentId) ?? []), item]);
       const invoiceIds: string[] = [];
-      for (const [apartmentId, items] of byApartment) {
+      for (const apartmentId of Array.from(byApartment.keys()).sort()) {
+        const items = byApartment.get(apartmentId)!;
         const first = items[0];
         const subtotal = items.reduce((sum, item) => sum.plus(item.netAmount), new Decimal(0));
         const vat = items.reduce((sum, item) => sum.plus(item.vatAmount), new Decimal(0));
         const total = items.reduce((sum, item) => sum.plus(item.totalAmount), new Decimal(0));
-        const invoice = await tx.invoice.upsert({
-          where: { billingPeriodId_apartmentId: { billingPeriodId: input.billingPeriodId, apartmentId } },
-          create: { projectId: input.projectId, apartmentId, residentId: first.residentId, billingPeriodId: input.billingPeriodId, invoiceNumber: 'INV-' + input.billingPeriodId + '-' + apartmentId, status: 'ISSUED', currencyCode: first.currencyCode, subtotal: subtotal.toFixed(12), vatAmount: vat.toFixed(12), totalAmount: total.toFixed(12), dueAt: period.periodEnd, issuedAt: new Date() },
-          update: { subtotal: subtotal.toFixed(12), vatAmount: vat.toFixed(12), totalAmount: total.toFixed(12), status: 'ISSUED', issuedAt: new Date(), version: { increment: 1 } },
-        });
+        const existingRows = await tx.$queryRawUnsafe<Array<{ id: string; status: string; paid_amount: Prisma.Decimal }>>('SELECT id, status::text AS status, paid_amount FROM invoices WHERE billing_period_id = $1::uuid AND apartment_id = $2::uuid FOR UPDATE', input.billingPeriodId, apartmentId);
+        const existing = existingRows[0];
+        const protectedStatuses = new Set(['PAID', 'PARTIALLY_PAID', 'OVERDUE', 'CANCELLED', 'VOIDED']);
+        if (existing && (protectedStatuses.has(existing.status) || asDecimal(existing.paid_amount).greaterThan(0))) {
+          invoiceIds.push(existing.id);
+          continue;
+        }
+        const invoice = existing
+          ? await tx.invoice.update({ where: { id: existing.id }, data: { subtotal: subtotal.toFixed(12), vatAmount: vat.toFixed(12), totalAmount: total.toFixed(12), status: 'ISSUED', issuedAt: new Date(), version: { increment: 1 } } })
+          : await tx.invoice.create({ data: { projectId: input.projectId, apartmentId, residentId: first.residentId, billingPeriodId: input.billingPeriodId, invoiceNumber: 'INV-' + input.billingPeriodId + '-' + apartmentId, status: 'ISSUED', currencyCode: first.currencyCode, subtotal: subtotal.toFixed(12), vatAmount: vat.toFixed(12), totalAmount: total.toFixed(12), dueAt: period.periodEnd, issuedAt: new Date() } });
         await tx.invoiceItem.deleteMany({ where: { invoiceId: invoice.id } });
         await tx.invoiceItem.createMany({ data: items.map((item) => ({ invoiceId: invoice.id, serviceId: item.serviceId, description: item.description, quantity: item.quantity.toFixed(12), unitPrice: item.unitPrice.toFixed(12), netAmount: item.netAmount.toFixed(12), vatAmount: item.vatAmount.toFixed(12), totalAmount: item.totalAmount.toFixed(12), currencyCode: item.currencyCode, pricingSnapshot: item.pricingSnapshot as Prisma.InputJsonValue })) });
         await tx.outboxEvent.create({ data: { eventId: invoice.id + ':issued:' + invoice.version, projectId: input.projectId, topic: 'qhome.billing.events.v1', eventType: 'billing.invoice.issued.v1', aggregateType: 'invoice', aggregateId: invoice.id, payload: { invoiceId: invoice.id, apartmentId, billingPeriodId: input.billingPeriodId, totalAmount: total.toFixed() }, headers: {} } });
         invoiceIds.push(invoice.id);
       }
       return { invoiceIds };
-    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable, maxWait: 5000, timeout: 15000 });
+    });
+  }
+
+  private async withSerializableRetry<T>(operation: (tx: Tx) => Promise<T>): Promise<T> {
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      try { return await this.prisma.$transaction(operation, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable, maxWait: 5000, timeout: 15000 }); }
+      catch (error: unknown) { if (!isSerializationConflict(error) || attempt === 3) throw error; await backoff(attempt); }
+    }
+    throw new Error('Serializable transaction retry budget exhausted');
   }
 
   async findOutstandingInvoices(projectId: string, apartmentIds: string[], cursor?: string, limit = 100) {

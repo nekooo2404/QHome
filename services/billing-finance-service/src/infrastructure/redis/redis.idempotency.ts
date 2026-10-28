@@ -4,7 +4,16 @@ import { IdempotencyGate } from '../../application/ports';
 export interface RedisIdempotencyClient {
   set(key: string, value: string, ...args: Array<string | number>): Promise<unknown>;
   get(key: string): Promise<string | null>;
+  eval(script: string, numberOfKeys: number, ...args: string[]): Promise<unknown>;
 }
+
+const ABORT_SCRIPT = `
+local current = redis.call('GET', KEYS[1])
+if not current then return 0 end
+local parsed = cjson.decode(current)
+if parsed['requestHash'] ~= ARGV[1] then return 0 end
+return redis.call('DEL', KEYS[1])
+`;
 
 export class RedisIdempotencyGate implements IdempotencyGate {
   constructor(private readonly redis: RedisIdempotencyClient) {}
@@ -24,6 +33,15 @@ export class RedisIdempotencyGate implements IdempotencyGate {
 
   async complete(scope: string, key: string, requestHash: string, statusCode: number, body: unknown): Promise<void> {
     const redisKey = 'billing:idempotency:{' + createHash('sha256').update(scope).digest('hex') + '}:' + key;
+    if (statusCode >= 500) {
+      await this.abort(scope, key, requestHash);
+      return;
+    }
     await this.redis.set(redisKey, JSON.stringify({ status: 'COMPLETED', requestHash, statusCode, body }), 'EX', 86_400);
+  }
+
+  async abort(scope: string, key: string, requestHash: string): Promise<void> {
+    const redisKey = 'billing:idempotency:{' + createHash('sha256').update(scope).digest('hex') + '}:' + key;
+    await this.redis.eval(ABORT_SCRIPT, 1, redisKey, requestHash);
   }
 }

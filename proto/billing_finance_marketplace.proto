@@ -1,0 +1,50 @@
+syntax = "proto3";
+
+package qhome.billing.finance.v1;
+
+import "common.proto";
+
+option java_multiple_files = true;
+option java_package = "com.qhome.billing.finance.v1";
+option csharp_namespace = "QHome.Billing.Finance.V1";
+option go_package = "github.com/qhome/backend/gen/qhome/billing/finance/v1;billingfinancev1";
+
+service BillingFinanceService {
+  rpc CreateMarketplacePaymentIntent(CreateMarketplacePaymentIntentRequest) returns (CreateMarketplacePaymentIntentResponse);
+  rpc RequestMarketplaceRefund(RequestMarketplaceRefundRequest) returns (RequestMarketplaceRefundResponse);
+}
+
+message CreateMarketplacePaymentIntentRequest {
+  qhome.common.v1.RequestContext context = 1;
+  string project_id = 2;
+  string apartment_id = 3;
+  string resident_id = 4;
+  string order_id = 5;
+  string amount_minor_units = 6;
+  string currency_code = 7;
+  string idempotency_key = 8;
+}
+
+message CreateMarketplacePaymentIntentResponse {
+  string payment_intent_id = 1;
+  string status = 2;
+  string provider = 3;
+}
+
+message RequestMarketplaceRefundRequest {
+  qhome.common.v1.RequestContext context = 1;
+  string project_id = 2;
+  string apartment_id = 3;
+  string resident_id = 4;
+  string order_id = 5;
+  string payment_intent_id = 6;
+  string amount_minor_units = 7;
+  string currency_code = 8;
+  string idempotency_key = 9;
+  string reason = 10;
+}
+
+message RequestMarketplaceRefundResponse {
+  string refund_id = 1;
+  string status = 2;
+}

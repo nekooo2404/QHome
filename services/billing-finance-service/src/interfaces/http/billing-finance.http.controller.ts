@@ -1,4 +1,7 @@
 import { Body, Controller, Get, Headers, Param, Post, Query, Req, Res } from '@nestjs/common';
+import { ContextRequest, getRequestContext } from '../../../../../libs/common/src/base-microservice';
+import { assertApartmentScope, assertStaffScope } from '../../../../../libs/common/src/apartment-scope';
+import { InvoiceIssueWorker } from '../../application/invoice-issue.worker';
 import { PaymentService } from '../../application/payment.service';
 import { PaymentWebhookService } from '../../application/webhook.service';
 import { ReportService } from '../../application/report.service';
@@ -14,21 +17,28 @@ export class BillingFinanceHttpController {
     private readonly webhook: PaymentWebhookService,
     private readonly reports: ReportService,
     private readonly repository: PaymentRepository,
+    private readonly invoiceIssue: InvoiceIssueWorker,
   ) {}
 
   @Get('/apartments/:apartmentId/receivables')
-  receivables(@Headers('x-tenant-id') projectId: string, @Param('apartmentId') apartmentId: string, @Query('currencyCode') currencyCode: string) {
-    return this.repository.loadOpenInvoicesForApartment(projectId, apartmentId, currencyCode);
+  receivables(@Req() request: ContextRequest, @Param('apartmentId') apartmentId: string, @Query('currencyCode') currencyCode: string) {
+    const context = getRequestContext(request);
+    assertApartmentScope(context, apartmentId);
+    return this.repository.loadOpenInvoicesForApartment(context.tenantId, apartmentId, currencyCode);
   }
 
   @Get('/apartments/:apartmentId/consumption-history')
-  consumption(@Headers('x-tenant-id') projectId: string, @Param('apartmentId') apartmentId: string, @Query('from') from: string, @Query('to') to: string) {
-    return this.repository.getConsumptionHistory(projectId, apartmentId, new Date(from), new Date(to));
+  consumption(@Req() request: ContextRequest, @Param('apartmentId') apartmentId: string, @Query('from') from: string, @Query('to') to: string) {
+    const context = getRequestContext(request);
+    assertApartmentScope(context, apartmentId);
+    return this.repository.getConsumptionHistory(context.tenantId, apartmentId, new Date(from), new Date(to));
   }
 
   @Post('/payments')
-  payment(@Headers('x-tenant-id') projectId: string, @Headers('x-apartment-id') apartmentId: string, @Headers('x-actor-id') residentId: string | undefined, @Headers('idempotency-key') idempotencyKey: string, @Body() body: { provider: string; providerTransactionId: string; channel: 'BANK_TRANSFER' | 'E_WALLET' | 'VIETQR' | 'CASH'; currencyCode: string; grossAmount: string; rawReference?: string }) {
-    return this.payments.applyPayment({ ...body, projectId, apartmentId, residentId, idempotencyKey });
+  payment(@Req() request: ContextRequest, @Headers('x-apartment-id') apartmentId: string, @Headers('idempotency-key') idempotencyKey: string, @Body() body: { provider: string; providerTransactionId: string; channel: 'BANK_TRANSFER' | 'E_WALLET' | 'VIETQR' | 'CASH'; currencyCode: string; grossAmount: string; rawReference?: string }) {
+    const context = getRequestContext(request);
+    assertApartmentScope(context, apartmentId);
+    return this.payments.applyPayment({ ...body, projectId: context.tenantId, apartmentId, residentId: context.actorId, idempotencyKey });
   }
 
   @Post('/webhooks/payments/:provider')
@@ -40,12 +50,21 @@ export class BillingFinanceHttpController {
   }
 
   @Get('/reports/cash-flow')
-  cashFlow(@Headers('x-tenant-id') projectId: string, @Query('from') from: string, @Query('to') to: string) {
-    return this.reports.cashFlow(projectId, new Date(from), new Date(to));
+  cashFlow(@Req() request: ContextRequest, @Query('from') from: string, @Query('to') to: string) {
+    const context = getRequestContext(request);
+    assertStaffScope(context);
+    return this.reports.cashFlow(context.tenantId, new Date(from), new Date(to));
   }
 
   @Get('/reports/receivables')
-  reportReceivables(@Headers('x-tenant-id') projectId: string, @Query('asOf') asOf: string) {
-    return this.reports.receivables(projectId, new Date(asOf));
+  reportReceivables(@Req() request: ContextRequest, @Query('asOf') asOf: string) {
+    const context = getRequestContext(request); assertStaffScope(context); return this.reports.receivables(context.tenantId, new Date(asOf));
+  }
+
+  @Post('/invoices/issue-batch')
+  issueBatch(@Req() request: ContextRequest, @Body() body: { billingPeriodId: string; items: Array<{ apartmentId: string; residentId?: string; serviceId: string; description: string; quantity: string; unitPrice: string; netAmount: string; vatAmount: string; totalAmount: string; currencyCode: string; pricingSnapshot: Record<string, unknown> }> }) {
+    const context = getRequestContext(request);
+    assertStaffScope(context);
+    return this.invoiceIssue.process({ projectId: context.tenantId, billingPeriodId: body.billingPeriodId, items: body.items });
   }
 }

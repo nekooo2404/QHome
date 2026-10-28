@@ -72,7 +72,7 @@ export function assertBalancedLedger(lines: LedgerLineInput[]): void {
   let credits = new Decimal(0);
   for (const line of lines) {
     nonNegative(line.amount, 'ledger amount');
-    if (line.amount.isZero()) throw new Error('Ledger amount must be positive');
+    if (!line.amount.isPositive()) throw new Error('Ledger amount must be positive');
     if (line.side === 'DEBIT') debits = debits.plus(line.amount);
     else credits = credits.plus(line.amount);
   }

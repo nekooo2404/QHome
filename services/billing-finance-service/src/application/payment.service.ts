@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import Decimal from 'decimal.js';
-import { assertBalancedLedger, decimal, planPaymentApplication } from '../domain/finance.types';
+import { decimal } from '../domain/finance.types';
 import { IdempotencyGate, LedgerAccountRepository, PaymentRepository } from './ports';
 
 export interface PaymentCommand {
@@ -32,34 +32,26 @@ export class PaymentService {
     const gate = await this.idempotency.begin(scope, command.idempotencyKey, requestHash, 86_400);
     if (!gate.acquired) {
       if (!gate.cachedResponse) throw new Error('Payment request is already being processed');
+      if (gate.cachedResponse.statusCode >= 500) {
+        const error = new Error('Cached payment processing failure');
+        Object.assign(error, { statusCode: gate.cachedResponse.statusCode, code: 'PAYMENT_PROCESSING_FAILED' });
+        throw error;
+      }
       return gate.cachedResponse.body as { paymentId: string; appliedAmount: string; surplusAmount: string; invoiceIds: string[] };
     }
 
     try {
       const grossAmount = decimal(command.grossAmount);
       if (!grossAmount.isFinite() || grossAmount.isNegative() || grossAmount.isZero()) throw new Error('grossAmount must be positive');
-      const invoices = await this.repository.loadOpenInvoicesForApartment(command.projectId, command.apartmentId, command.currencyCode);
-      const plan = planPaymentApplication(grossAmount, invoices);
-      await this.accounts.getAccountId(command.projectId, 'BANK_CASH', command.currencyCode);
-      await this.accounts.getAccountId(command.projectId, 'ACCOUNTS_RECEIVABLE', command.currencyCode);
-      await this.accounts.getAccountId(command.projectId, 'APARTMENT_WALLET_LIABILITY', command.currencyCode);
-      const lines = [
-        { accountCode: 'BANK_CASH', side: 'DEBIT' as const, amount: grossAmount, currencyCode: command.currencyCode, apartmentId: command.apartmentId, description: 'Payment received' },
-        { accountCode: 'ACCOUNTS_RECEIVABLE', side: 'CREDIT' as const, amount: plan.appliedAmount, currencyCode: command.currencyCode, apartmentId: command.apartmentId, description: 'Invoice settlement' },
-        ...(plan.surplus.isZero() ? [] : [{ accountCode: 'APARTMENT_WALLET_LIABILITY', side: 'CREDIT' as const, amount: plan.surplus, currencyCode: command.currencyCode, apartmentId: command.apartmentId, description: 'Payment surplus credited to apartment wallet' }]),
-      ];
-      assertBalancedLedger(lines);
       const result = await this.repository.applyPayment({
         ...command,
         grossAmount,
-        plan,
-        ledger: { projectId: command.projectId, referenceType: 'PAYMENT', referenceId: `${command.provider}:${command.providerTransactionId}`, description: 'Payment settlement', lines },
       });
       const response = { paymentId: result.paymentId, appliedAmount: result.appliedAmount.toFixed(), surplusAmount: result.surplusAmount.toFixed(), invoiceIds: result.invoiceIds };
       await this.idempotency.complete(scope, command.idempotencyKey, requestHash, 200, response);
       return response;
     } catch (error) {
-      await this.idempotency.complete(scope, command.idempotencyKey, requestHash, 500, { error: 'PAYMENT_PROCESSING_FAILED' }).catch(() => undefined);
+      await this.idempotency.abort(scope, command.idempotencyKey, requestHash).catch(() => undefined);
       throw error;
     }
   }
