@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { Prisma, PrismaClient } from '@prisma/client';
-import { AuthRepository, AuthUserRecord, RefreshRotationInput, RefreshRotationResult } from '../../application/ports';
+import { AuthRepository, AuthUserRecord, RefreshRotationInput, RefreshRotationResult, TenantAdminRepository } from '../../application/ports';
 import { AuthenticatedUser, SessionRecord, TenantMembership } from '../../domain/auth';
 import { PermissionGrant, PermissionMatrix } from '../../domain/authorization';
 
@@ -46,7 +46,11 @@ function toMembership(record: {
   };
 }
 
-export class PrismaIamRepository implements AuthRepository {
+function adminOutbox(projectId: string | undefined, eventType: string, aggregateType: string, aggregateId: string, payload: Record<string, unknown>, occurredAt: Date) {
+  return { eventId: randomUUID(), projectId, eventType, aggregateType, aggregateId, payload, headers: {}, occurredAt };
+}
+
+export class PrismaIamRepository implements AuthRepository, TenantAdminRepository {
   constructor(private readonly prisma: PrismaClient) {}
 
   async findUserForLogin(emailNormalized: string, projectId: string): Promise<AuthUserRecord | null> {
@@ -183,6 +187,7 @@ export class PrismaIamRepository implements AuthRepository {
         return {
           status: 'REUSE_DETECTED',
           familyId: token.familyId,
+          sessionId: token.family.sessionId,
           projectId: token.family.session.membership.projectId,
         };
       }
@@ -213,6 +218,7 @@ export class PrismaIamRepository implements AuthRepository {
         return {
           status: 'REUSE_DETECTED',
           familyId: token.familyId,
+          sessionId: token.family.sessionId,
           projectId: token.family.session.membership.projectId,
         };
       }
@@ -249,10 +255,11 @@ export class PrismaIamRepository implements AuthRepository {
 
   async revokeSession(sessionId: string, userId: string, now: Date): Promise<void> {
     await this.prisma.$transaction(async (tx) => {
-      await tx.authSession.updateMany({
+      const revoked = await tx.authSession.updateMany({
         where: { id: sessionId, userId, status: 'ACTIVE' },
         data: { status: 'REVOKED', revokedAt: now },
       });
+      if (revoked.count !== 1) return;
       const family = await tx.refreshTokenFamily.findUnique({ where: { sessionId } });
       if (!family) return;
       await tx.refreshTokenFamily.update({ where: { id: family.id }, data: { revokedAt: now } });
@@ -260,12 +267,14 @@ export class PrismaIamRepository implements AuthRepository {
     });
   }
 
-  async revokeAllSessions(userId: string, now: Date): Promise<void> {
+  async revokeAllSessions(userId: string, now: Date): Promise<string[]> {
+    const sessions = await this.prisma.authSession.findMany({ where: { userId, status: 'ACTIVE' }, select: { id: true } });
     await this.prisma.$transaction([
       this.prisma.authSession.updateMany({ where: { userId, status: 'ACTIVE' }, data: { status: 'REVOKED', revokedAt: now } }),
       this.prisma.refreshTokenFamily.updateMany({ where: { userId, revokedAt: null }, data: { revokedAt: now } }),
       this.prisma.refreshToken.updateMany({ where: { userId, revokedAt: null }, data: { revokedAt: now } }),
     ]);
+    return sessions.map((session) => session.id);
   }
 
   async getAuthorizationMatrix(userId: string, projectId: string): Promise<PermissionMatrix | null> {
@@ -328,6 +337,7 @@ export class PrismaIamRepository implements AuthRepository {
 
     return {
       version: String(membership.version),
+      staffScope: user.userType === 'BQL',
       grants,
       buildingIds: membership.scopes.map((scope) => scope.buildingId),
       apartmentIds: membership.scopes.flatMap((scope) => scope.apartmentId ? [scope.apartmentId] : []),
@@ -399,6 +409,100 @@ export class PrismaIamRepository implements AuthRepository {
         },
       });
       return String(updatedMembership.version);
+    });
+  }
+
+  async createProject(input: { code: string; name: string; actorUserId: string; correlationId: string }) {
+    return this.withSerializableRetry(async (tx) => {
+      const project = await tx.project.create({ data: { code: input.code.trim(), name: input.name.trim() } });
+      const occurredAt = new Date();
+      await tx.outboxEvent.create({ data: adminOutbox(project.id, 'iam.project.created.v1', 'project', project.id, { projectId: project.id, code: project.code, name: project.name, actorUserId: input.actorUserId }, occurredAt) });
+      await tx.auditEvent.create({ data: { projectId: project.id, actorUserId: input.actorUserId, action: 'PROJECT_CREATED', resourceType: 'project', resourceId: project.id, correlationId: input.correlationId, metadata: { code: project.code, name: project.name } } });
+      return { id: project.id, code: project.code, name: project.name, status: project.status };
+    });
+  }
+
+  async createBuilding(input: { projectId: string; code: string; name: string; actorUserId: string; correlationId: string }) {
+    return this.withSerializableRetry(async (tx) => {
+      const project = await tx.project.findUnique({ where: { id: input.projectId } });
+      if (!project || project.status !== 'ACTIVE') throw new Error('Project is not active');
+      const building = await tx.building.create({ data: { projectId: input.projectId, code: input.code.trim(), name: input.name.trim() } });
+      const occurredAt = new Date();
+      await tx.outboxEvent.create({ data: adminOutbox(input.projectId, 'iam.building.created.v1', 'building', building.id, { buildingId: building.id, projectId: input.projectId, code: building.code, actorUserId: input.actorUserId }, occurredAt) });
+      await tx.auditEvent.create({ data: { projectId: input.projectId, actorUserId: input.actorUserId, action: 'BUILDING_CREATED', resourceType: 'building', resourceId: building.id, correlationId: input.correlationId, metadata: { code: building.code, name: building.name } } });
+      return { id: building.id, projectId: building.projectId, code: building.code, name: building.name, status: building.status };
+    });
+  }
+
+  async createDepartment(input: { projectId: string; code: string; name: string; description?: string; actorUserId: string; correlationId: string }) {
+    return this.withSerializableRetry(async (tx) => {
+      const project = await tx.project.findUnique({ where: { id: input.projectId } });
+      if (!project || project.status !== 'ACTIVE') throw new Error('Project is not active');
+      const department = await tx.department.create({ data: { projectId: input.projectId, code: input.code.trim(), name: input.name.trim(), description: input.description?.trim() } });
+      const occurredAt = new Date();
+      await tx.outboxEvent.create({ data: adminOutbox(input.projectId, 'iam.department.created.v1', 'department', department.id, { departmentId: department.id, projectId: input.projectId, code: department.code, actorUserId: input.actorUserId }, occurredAt) });
+      await tx.auditEvent.create({ data: { projectId: input.projectId, actorUserId: input.actorUserId, action: 'DEPARTMENT_CREATED', resourceType: 'department', resourceId: department.id, correlationId: input.correlationId, metadata: { code: department.code, name: department.name } } });
+      return { id: department.id, projectId: department.projectId, code: department.code, name: department.name, isActive: department.isActive };
+    });
+  }
+
+  async provisionUser(input: { projectId: string; emailNormalized: string; displayName: string; userType: 'BQL' | 'RESIDENT'; passwordHash: string; apartmentId?: string; buildingIds: string[]; actorUserId: string; correlationId: string }) {
+    return this.withSerializableRetry(async (tx) => {
+      const project = await tx.project.findUnique({ where: { id: input.projectId } });
+      if (!project || project.status !== 'ACTIVE') throw new Error('Project is not active');
+      const buildings = input.buildingIds.length === 0 ? [] : await tx.building.findMany({ where: { projectId: input.projectId, id: { in: input.buildingIds }, status: 'ACTIVE' }, select: { id: true } });
+      if (buildings.length !== input.buildingIds.length) throw new Error('One or more buildings are outside the project scope');
+      const user = await tx.user.create({ data: { emailNormalized: input.emailNormalized, displayName: input.displayName, userType: input.userType, status: 'ACTIVE', passwordHash: input.passwordHash } });
+      const membership = await tx.projectMembership.create({ data: { projectId: input.projectId, userId: user.id, status: 'ACTIVE', apartmentId: input.apartmentId, scopes: { create: input.buildingIds.map((buildingId) => ({ buildingId, apartmentId: input.apartmentId, scopeKey: input.apartmentId ? `BUILDING:${buildingId}:APARTMENT:${input.apartmentId}` : `BUILDING:${buildingId}` })) } } });
+      const occurredAt = new Date();
+      await tx.outboxEvent.create({ data: adminOutbox(input.projectId, 'iam.user.provisioned.v1', 'user', user.id, { userId: user.id, membershipId: membership.id, projectId: input.projectId, userType: input.userType, actorUserId: input.actorUserId }, occurredAt) });
+      await tx.auditEvent.create({ data: { projectId: input.projectId, actorUserId: input.actorUserId, action: 'USER_PROVISIONED', resourceType: 'user', resourceId: user.id, correlationId: input.correlationId, metadata: { userType: input.userType, membershipId: membership.id } } });
+      return { userId: user.id, membershipId: membership.id, projectId: input.projectId, emailNormalized: user.emailNormalized, status: user.status };
+    });
+  }
+
+  async assignRole(input: { projectId: string; userId: string; roleCode: string; buildingIds: string[]; actorUserId: string; correlationId: string }) {
+    return this.withSerializableRetry(async (tx) => {
+      const membership = await tx.projectMembership.findUnique({ where: { projectId_userId: { projectId: input.projectId, userId: input.userId } } });
+      const role = await tx.role.findUnique({ where: { projectId_code: { projectId: input.projectId, code: input.roleCode } } });
+      if (!membership || membership.status !== 'ACTIVE' || !role || !role.isActive) throw new Error('User membership or role is unavailable');
+      const buildings = input.buildingIds.length === 0 ? [] : await tx.building.findMany({ where: { projectId: input.projectId, id: { in: input.buildingIds }, status: 'ACTIVE' }, select: { id: true } });
+      if (buildings.length !== input.buildingIds.length) throw new Error('Role scope contains a building outside the project');
+      const assignment = await tx.roleAssignment.create({ data: { projectId: input.projectId, userId: input.userId, roleId: role.id, source: 'DIRECT', scopes: { create: input.buildingIds.map((buildingId) => ({ scopeType: 'BUILDING', buildingId, scopeKey: `BUILDING:${buildingId}` })) } } });
+      const updated = await tx.projectMembership.update({ where: { id: membership.id }, data: { version: { increment: 1 } }, select: { version: true } });
+      await tx.outboxEvent.create({ data: adminOutbox(input.projectId, 'iam.role.assigned.v1', 'role_assignment', assignment.id, { assignmentId: assignment.id, projectId: input.projectId, userId: input.userId, roleCode: input.roleCode, buildingIds: input.buildingIds, actorUserId: input.actorUserId, authorizationVersion: String(updated.version) }, new Date()) });
+      await tx.auditEvent.create({ data: { projectId: input.projectId, actorUserId: input.actorUserId, action: 'ROLE_ASSIGNED', resourceType: 'user', resourceId: input.userId, correlationId: input.correlationId, metadata: { roleCode: input.roleCode, buildingIds: input.buildingIds } } });
+      return { userId: input.userId, projectId: input.projectId, authorizationVersion: String(updated.version) };
+    });
+  }
+
+  async addDepartmentMember(input: { projectId: string; departmentCode: string; userId: string; actorUserId: string; correlationId: string }) {
+    return this.withSerializableRetry(async (tx) => {
+      const department = await tx.department.findUnique({ where: { projectId_code: { projectId: input.projectId, code: input.departmentCode } } });
+      const membership = await tx.projectMembership.findUnique({ where: { projectId_userId: { projectId: input.projectId, userId: input.userId } } });
+      if (!department?.isActive || !membership || membership.status !== 'ACTIVE') throw new Error('Department or user membership is unavailable');
+      await tx.departmentMember.upsert({ where: { departmentId_userId: { departmentId: department.id, userId: input.userId } }, create: { departmentId: department.id, userId: input.userId }, update: { removedAt: null } });
+      const updated = await tx.projectMembership.update({ where: { id: membership.id }, data: { version: { increment: 1 } }, select: { version: true } });
+      await tx.outboxEvent.create({ data: adminOutbox(input.projectId, 'iam.department.member_added.v1', 'department_member', `${department.id}:${input.userId}`, { projectId: input.projectId, departmentId: department.id, userId: input.userId, actorUserId: input.actorUserId, authorizationVersion: String(updated.version) }, new Date()) });
+      await tx.auditEvent.create({ data: { projectId: input.projectId, actorUserId: input.actorUserId, action: 'DEPARTMENT_MEMBER_ADDED', resourceType: 'user', resourceId: input.userId, correlationId: input.correlationId, metadata: { departmentCode: input.departmentCode } } });
+      return { userId: input.userId, projectId: input.projectId, authorizationVersion: String(updated.version) };
+    });
+  }
+
+  async bindDepartmentRole(input: { projectId: string; departmentCode: string; roleCode: string; actorUserId: string; correlationId: string }) {
+    return this.withSerializableRetry(async (tx) => {
+      const department = await tx.department.findUnique({ where: { projectId_code: { projectId: input.projectId, code: input.departmentCode }, }, include: { members: { where: { removedAt: null }, select: { userId: true } } } });
+      const role = await tx.role.findUnique({ where: { projectId_code: { projectId: input.projectId, code: input.roleCode } } });
+      if (!department?.isActive || !role?.isActive) throw new Error('Department or role is unavailable');
+      await tx.departmentRoleBinding.upsert({ where: { departmentId_roleId: { departmentId: department.id, roleId: role.id } }, create: { departmentId: department.id, roleId: role.id }, update: {} });
+      const authorizationVersions: Array<{ userId: string; version: string }> = [];
+      for (const member of department.members) {
+        const updated = await tx.projectMembership.update({ where: { projectId_userId: { projectId: input.projectId, userId: member.userId } }, data: { version: { increment: 1 } }, select: { version: true } });
+        authorizationVersions.push({ userId: member.userId, version: String(updated.version) });
+      }
+      await tx.outboxEvent.create({ data: adminOutbox(input.projectId, 'iam.department.role_bound.v1', 'department', department.id, { projectId: input.projectId, departmentCode: input.departmentCode, roleCode: input.roleCode, authorizationVersions, actorUserId: input.actorUserId }, new Date()) });
+      await tx.auditEvent.create({ data: { projectId: input.projectId, actorUserId: input.actorUserId, action: 'DEPARTMENT_ROLE_BOUND', resourceType: 'department', resourceId: department.id, correlationId: input.correlationId, metadata: { roleCode: input.roleCode, authorizationVersions } } });
+      return { authorizationVersions, projectId: input.projectId };
     });
   }
 

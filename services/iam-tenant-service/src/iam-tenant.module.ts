@@ -4,15 +4,17 @@ import { AuthenticationService } from './application/authentication.service';
 import { AuthorizationService } from './application/authorization.service';
 import { IamTenantGrpcController } from './interfaces/grpc/iam-tenant.grpc.controller';
 import { IamTenantHttpController } from './interfaces/http/iam-tenant.http.controller';
+import { TenantAdministrationHttpController } from './interfaces/http/tenant-administration.http.controller';
 import { IAM_TOKENS } from './iam-tenant.tokens';
 import { PrismaIamRepository } from './infrastructure/prisma/prisma-iam.repository';
 import { Argon2idPasswordHasher } from './infrastructure/security/argon2-password.hasher';
 import { HmacSha256TokenHasher, RandomOpaqueTokenGenerator, SystemClock, UuidGenerator } from './infrastructure/security/token-primitives';
-import { RedisAuthorizationVersionStore, RedisPermissionCache, RedisSlidingWindowRateLimiter } from './infrastructure/security/redis-security';
+import { RedisPermissionCache, RedisSessionRevocationStore, RedisSlidingWindowRateLimiter } from './infrastructure/security/redis-security';
 import { createRedisClusterClient } from './infrastructure/messaging/redis-cluster.client';
 import { createKafkaProducer } from './infrastructure/messaging/kafka.client';
 import { KafkaOutboxRelay } from './infrastructure/messaging/outbox-relay';
 import { Rs256JwtSigner } from './infrastructure/security/rs256-jwt.signer';
+import { TenantAdministrationService } from './application/tenant-administration.service';
 
 function requiredEnv(name: string): string {
   const value = process.env[name];
@@ -25,7 +27,7 @@ function pemEnv(name: string): string {
 }
 
 @Module({
-  controllers: [IamTenantHttpController, IamTenantGrpcController],
+  controllers: [IamTenantHttpController, TenantAdministrationHttpController, IamTenantGrpcController],
   providers: [
     {
       provide: IAM_TOKENS.Prisma,
@@ -53,6 +55,7 @@ function pemEnv(name: string): string {
       useFactory: (redis: ReturnType<typeof createRedisClusterClient>) => new RedisSlidingWindowRateLimiter(redis, requiredEnv('IAM_RATE_LIMIT_PEPPER')),
       inject: [IAM_TOKENS.Redis],
     },
+    { provide: IAM_TOKENS.SessionRevocation, useFactory: (redis: ReturnType<typeof createRedisClusterClient>) => new RedisSessionRevocationStore(redis), inject: [IAM_TOKENS.Redis] },
     { provide: IAM_TOKENS.PermissionCache, useFactory: (redis: ReturnType<typeof createRedisClusterClient>) => new RedisPermissionCache(redis), inject: [IAM_TOKENS.Redis] },
     { provide: IAM_TOKENS.IdGenerator, useClass: UuidGenerator },
     { provide: IAM_TOKENS.Clock, useClass: SystemClock },
@@ -60,13 +63,14 @@ function pemEnv(name: string): string {
     { provide: IAM_TOKENS.OutboxRelay, useFactory: (prisma: PrismaClient, producer: Awaited<ReturnType<typeof createKafkaProducer>>) => new KafkaOutboxRelay(prisma, producer), inject: [IAM_TOKENS.Prisma, IAM_TOKENS.KafkaProducer] },
     {
       provide: AuthenticationService,
-      useFactory: (repository, passwordHasher, tokenHasher, signer, refreshGenerator, rateLimiter, clock, ids) => new AuthenticationService(
+      useFactory: (repository, passwordHasher, tokenHasher, signer, refreshGenerator, rateLimiter, sessionRevocation, clock, ids) => new AuthenticationService(
         repository,
         passwordHasher,
         tokenHasher,
         signer,
         refreshGenerator,
         rateLimiter,
+        sessionRevocation,
         clock,
         ids,
         {
@@ -77,12 +81,17 @@ function pemEnv(name: string): string {
           dummyPasswordHash: requiredEnv('IAM_DUMMY_PASSWORD_HASH'),
         },
       ),
-      inject: [IAM_TOKENS.AuthRepository, IAM_TOKENS.PasswordHasher, IAM_TOKENS.TokenHasher, IAM_TOKENS.AccessTokenSigner, IAM_TOKENS.RefreshTokenGenerator, IAM_TOKENS.RateLimiter, IAM_TOKENS.Clock, IAM_TOKENS.IdGenerator],
+      inject: [IAM_TOKENS.AuthRepository, IAM_TOKENS.PasswordHasher, IAM_TOKENS.TokenHasher, IAM_TOKENS.AccessTokenSigner, IAM_TOKENS.RefreshTokenGenerator, IAM_TOKENS.RateLimiter, IAM_TOKENS.SessionRevocation, IAM_TOKENS.Clock, IAM_TOKENS.IdGenerator],
     },
     {
       provide: AuthorizationService,
-      useFactory: (repository, cache, ids) => new AuthorizationService(repository, cache, ids, Number(process.env.IAM_PERMISSION_CACHE_TTL_SECONDS ?? 60)),
-      inject: [IAM_TOKENS.AuthRepository, IAM_TOKENS.PermissionCache, IAM_TOKENS.IdGenerator],
+      useFactory: (repository, cache, ids, sessionRevocation) => new AuthorizationService(repository, cache, ids, sessionRevocation, Number(process.env.IAM_PERMISSION_CACHE_TTL_SECONDS ?? 60)),
+      inject: [IAM_TOKENS.AuthRepository, IAM_TOKENS.PermissionCache, IAM_TOKENS.IdGenerator, IAM_TOKENS.SessionRevocation],
+    },
+    {
+      provide: TenantAdministrationService,
+      useFactory: (repository, authorization, passwordHasher, permissionCache) => new TenantAdministrationService(repository, authorization, passwordHasher, permissionCache),
+      inject: [IAM_TOKENS.AuthRepository, AuthorizationService, IAM_TOKENS.PasswordHasher, IAM_TOKENS.PermissionCache],
     },
   ],
 })

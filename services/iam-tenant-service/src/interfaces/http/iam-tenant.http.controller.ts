@@ -1,4 +1,6 @@
-import { Body, Controller, Get, Headers, HttpCode, Post } from '@nestjs/common';
+import { Body, Controller, Get, Headers, HttpCode, Post, Req } from '@nestjs/common';
+import { ContextRequest, getRequestContext } from '../../../../../libs/common/src/base-microservice';
+import { ContextRequest, getRequestContext } from '../../../../../libs/common/src/base-microservice';
 import { AuthenticationService, LoginCommand } from '../../application/authentication.service';
 import { JwksProvider } from '../../application/ports';
 
@@ -27,12 +29,14 @@ export class IamTenantHttpController {
   @Post('/v1/auth/login')
   @HttpCode(200)
   async login(
-    @Headers('x-tenant-id') projectId: string,
+    @Req() request: ContextRequest,
     @Headers('x-client-ip-hash') ipHash: string | undefined,
     @Headers('x-user-agent-hash') userAgentHash: string | undefined,
     @Body() body: LoginBody,
   ) {
     this.validateLoginBody(body);
+    const projectId = getRequestContext(request).tenantId;
+    if (!projectId) throw new Error('tenant context is required');
     const command: LoginCommand = {
       projectId,
       email: body.email,
@@ -56,16 +60,19 @@ export class IamTenantHttpController {
   @Post('/v1/auth/logout')
   @HttpCode(204)
   async logout(
-    @Headers('x-actor-id') userId: string,
-    @Headers('x-session-id') sessionId: string,
+    @Req() request: ContextRequest,
   ): Promise<void> {
-    await this.authentication.logout(sessionId, userId);
+    const context = getRequestContext(request);
+    if (!context.actorId || !context.sessionId) throw new Error('authenticated user and session context are required');
+    await this.authentication.logout(context.sessionId, context.actorId);
   }
 
   @Post('/v1/auth/logout-all')
   @HttpCode(204)
-  async logoutAll(@Headers('x-actor-id') userId: string): Promise<void> {
-    await this.authentication.logoutAll(userId);
+  async logoutAll(@Req() request: ContextRequest): Promise<void> {
+    const context = getRequestContext(request);
+    if (!context.actorId) throw new Error('authenticated user context is required');
+    await this.authentication.logoutAll(context.actorId);
   }
 
   private validateLoginBody(body: LoginBody): void {

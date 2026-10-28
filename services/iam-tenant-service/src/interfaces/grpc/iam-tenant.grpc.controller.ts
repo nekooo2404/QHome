@@ -42,6 +42,7 @@ export class IamTenantGrpcController {
       permission,
       buildingId: request.buildingId,
       apartmentId,
+      sessionId: transportContext.sessionId,
     }, transportContext.tenantId);
     return {
       allowed: decision.allowed,
@@ -56,7 +57,7 @@ export class IamTenantGrpcController {
     const userId = this.required(request.userId, 'user_id');
     const projectId = this.required(request.projectId, 'project_id');
     this.assertTargetPrincipal(transportContext.actorId, transportContext.clientType, userId);
-    const matrix = await this.authorization.getTenantContext(userId, projectId, transportContext.tenantId);
+    const matrix = await this.authorization.getTenantContext(userId, projectId, transportContext.tenantId, transportContext.sessionId);
     return {
       projectId,
       userId,

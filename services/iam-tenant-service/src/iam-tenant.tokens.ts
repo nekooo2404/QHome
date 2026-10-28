@@ -8,6 +8,7 @@ export const IAM_TOKENS = {
   JwksProvider: Symbol('IAM_JWKS_PROVIDER'),
   RefreshTokenGenerator: Symbol('IAM_REFRESH_TOKEN_GENERATOR'),
   RateLimiter: Symbol('IAM_RATE_LIMITER'),
+  SessionRevocation: Symbol('IAM_SESSION_REVOCATION'),
   PermissionCache: Symbol('IAM_PERMISSION_CACHE'),
   IdGenerator: Symbol('IAM_ID_GENERATOR'),
   Clock: Symbol('IAM_CLOCK'),

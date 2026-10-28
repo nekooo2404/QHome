@@ -64,37 +64,37 @@ enum SigningKeyStatus {
 }
 
 model Project {
-  id          String        @id @default(uuid()) @db.Uuid
-  code        String        @unique @db.VarChar(64)
-  name        String        @db.VarChar(200)
-  status      ProjectStatus @default(ACTIVE)
-  version     Int           @default(1)
-  createdAt   DateTime      @default(now())
-  updatedAt   DateTime      @updatedAt
+  id        String        @id @default(uuid()) @db.Uuid
+  code      String        @unique @db.VarChar(64)
+  name      String        @db.VarChar(200)
+  status    ProjectStatus @default(ACTIVE)
+  version   Int           @default(1)
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
 
-  buildings             Building[]
-  departments           Department[]
-  roles                 Role[]
-  memberships           ProjectMembership[]
-  roleAssignments       RoleAssignment[]
-  permissionOverrides   UserPermissionOverride[]
-  outboxEvents          OutboxEvent[]
-  auditEvents           AuditEvent[]
+  buildings           Building[]
+  departments         Department[]
+  roles               Role[]
+  memberships         ProjectMembership[]
+  roleAssignments     RoleAssignment[]
+  permissionOverrides UserPermissionOverride[]
+  outboxEvents        OutboxEvent[]
+  auditEvents         AuditEvent[]
 
   @@index([status])
   @@map("projects")
 }
 
 model Building {
-  id          String         @id @default(uuid()) @db.Uuid
-  projectId   String         @db.Uuid
-  code        String         @db.VarChar(64)
-  name        String         @db.VarChar(200)
-  status      BuildingStatus @default(ACTIVE)
-  createdAt   DateTime       @default(now())
-  updatedAt   DateTime       @updatedAt
+  id        String         @id @default(uuid()) @db.Uuid
+  projectId String         @db.Uuid
+  code      String         @db.VarChar(64)
+  name      String         @db.VarChar(200)
+  status    BuildingStatus @default(ACTIVE)
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @updatedAt
 
-  project             Project                   @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  project             Project                  @relation(fields: [projectId], references: [id], onDelete: Restrict)
   membershipScopes    ProjectMembershipScope[]
   roleAssignmentScope RoleAssignmentScope[]
   permissionOverrides UserPermissionOverride[]
@@ -114,9 +114,9 @@ model Department {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  project       Project              @relation(fields: [projectId], references: [id], onDelete: Restrict)
-  members       DepartmentMember[]
-  roleBindings  DepartmentRoleBinding[]
+  project      Project                 @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  members      DepartmentMember[]
+  roleBindings DepartmentRoleBinding[]
 
   @@unique([projectId, code])
   @@index([projectId, isActive])
@@ -124,26 +124,26 @@ model Department {
 }
 
 model User {
-  id                 String                 @id @default(uuid()) @db.Uuid
-  emailNormalized    String                 @unique @db.VarChar(320)
-  displayName        String                 @db.VarChar(200)
-  userType           UserType
-  status             UserStatus             @default(PENDING)
-  passwordHash       String                 @db.VarChar(512)
-  failedLoginCount   Int                    @default(0)
-  lockedUntil        DateTime?
-  lastLoginAt        DateTime?
-  createdAt          DateTime               @default(now())
-  updatedAt          DateTime               @updatedAt
+  id               String     @id @default(uuid()) @db.Uuid
+  emailNormalized  String     @unique @db.VarChar(320)
+  displayName      String     @db.VarChar(200)
+  userType         UserType
+  status           UserStatus @default(PENDING)
+  passwordHash     String     @db.VarChar(512)
+  failedLoginCount Int        @default(0)
+  lockedUntil      DateTime?
+  lastLoginAt      DateTime?
+  createdAt        DateTime   @default(now())
+  updatedAt        DateTime   @updatedAt
 
-  memberships        ProjectMembership[]
-  departmentMembers  DepartmentMember[]
-  roleAssignments    RoleAssignment[]
-  permissionOverrides UserPermissionOverride[]
-  sessions           AuthSession[]
-  refreshTokens      RefreshToken[]
+  memberships          ProjectMembership[]
+  departmentMembers    DepartmentMember[]
+  roleAssignments      RoleAssignment[]
+  permissionOverrides  UserPermissionOverride[]
+  sessions             AuthSession[]
+  refreshTokens        RefreshToken[]
   refreshTokenFamilies RefreshTokenFamily[]
-  auditEvents        AuditEvent[]
+  auditEvents          AuditEvent[]
 
   @@index([status, userType])
   @@map("users")
@@ -159,10 +159,10 @@ model ProjectMembership {
   revokedAt   DateTime?
   version     Int              @default(1)
 
-  project      Project                   @relation(fields: [projectId], references: [id], onDelete: Restrict)
-  user         User                      @relation(fields: [userId], references: [id], onDelete: Restrict)
-  scopes       ProjectMembershipScope[]
-  sessions     AuthSession[]
+  project  Project                  @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  user     User                     @relation(fields: [userId], references: [id], onDelete: Restrict)
+  scopes   ProjectMembershipScope[]
+  sessions AuthSession[]
 
   @@unique([projectId, userId])
   @@index([userId, status])
@@ -171,12 +171,12 @@ model ProjectMembership {
 }
 
 model ProjectMembershipScope {
-  id           String            @id @default(uuid()) @db.Uuid
-  membershipId String            @db.Uuid
-  buildingId   String            @db.Uuid
-  apartmentId  String?           @db.Uuid
-  scopeKey     String            @db.VarChar(180)
-  createdAt    DateTime          @default(now())
+  id           String   @id @default(uuid()) @db.Uuid
+  membershipId String   @db.Uuid
+  buildingId   String   @db.Uuid
+  apartmentId  String?  @db.Uuid
+  scopeKey     String   @db.VarChar(180)
+  createdAt    DateTime @default(now())
 
   membership ProjectMembership @relation(fields: [membershipId], references: [id], onDelete: Cascade)
   building   Building          @relation(fields: [buildingId], references: [id], onDelete: Restrict)
@@ -187,10 +187,10 @@ model ProjectMembershipScope {
 }
 
 model DepartmentMember {
-  id           String     @id @default(uuid()) @db.Uuid
-  departmentId String     @db.Uuid
-  userId       String     @db.Uuid
-  createdAt    DateTime   @default(now())
+  id           String    @id @default(uuid()) @db.Uuid
+  departmentId String    @db.Uuid
+  userId       String    @db.Uuid
+  createdAt    DateTime  @default(now())
   removedAt    DateTime?
 
   department Department @relation(fields: [departmentId], references: [id], onDelete: Cascade)
@@ -202,32 +202,32 @@ model DepartmentMember {
 }
 
 model Permission {
-  id          String       @id @default(uuid()) @db.Uuid
-  code        String       @unique @db.VarChar(160)
-  description String       @db.VarChar(500)
-  createdAt   DateTime     @default(now())
+  id          String   @id @default(uuid()) @db.Uuid
+  code        String   @unique @db.VarChar(160)
+  description String   @db.VarChar(500)
+  createdAt   DateTime @default(now())
 
-  rolePermissions      RolePermission[]
-  permissionOverrides  UserPermissionOverride[]
+  rolePermissions     RolePermission[]
+  permissionOverrides UserPermissionOverride[]
 
   @@map("permissions")
 }
 
 model Role {
-  id          String       @id @default(uuid()) @db.Uuid
-  projectId   String       @db.Uuid
-  code        String       @db.VarChar(96)
-  name        String       @db.VarChar(160)
-  description String?      @db.VarChar(500)
-  isSystem    Boolean      @default(false)
-  isActive    Boolean      @default(true)
-  createdAt   DateTime     @default(now())
-  updatedAt   DateTime     @updatedAt
+  id          String   @id @default(uuid()) @db.Uuid
+  projectId   String   @db.Uuid
+  code        String   @db.VarChar(96)
+  name        String   @db.VarChar(160)
+  description String?  @db.VarChar(500)
+  isSystem    Boolean  @default(false)
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 
-  project          Project                @relation(fields: [projectId], references: [id], onDelete: Restrict)
-  permissions      RolePermission[]
-  departmentRoles  DepartmentRoleBinding[]
-  assignments      RoleAssignment[]
+  project         Project                 @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  permissions     RolePermission[]
+  departmentRoles DepartmentRoleBinding[]
+  assignments     RoleAssignment[]
 
   @@unique([projectId, code])
   @@index([projectId, isActive])
@@ -266,10 +266,10 @@ model RoleAssignment {
   createdAt    DateTime             @default(now())
   revokedAt    DateTime?
 
-  project    Project              @relation(fields: [projectId], references: [id], onDelete: Restrict)
-  user       User                 @relation(fields: [userId], references: [id], onDelete: Restrict)
-  role       Role                 @relation(fields: [roleId], references: [id], onDelete: Cascade)
-  scopes     RoleAssignmentScope[]
+  project Project               @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  user    User                  @relation(fields: [userId], references: [id], onDelete: Restrict)
+  role    Role                  @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  scopes  RoleAssignmentScope[]
 
   @@index([projectId, userId, revokedAt])
   @@index([roleId, revokedAt])
@@ -325,9 +325,9 @@ model AuthSession {
   revokedAt     DateTime?
   createdAt     DateTime      @default(now())
 
-  user         User             @relation(fields: [userId], references: [id], onDelete: Cascade)
-  membership   ProjectMembership @relation(fields: [membershipId], references: [id], onDelete: Cascade)
-  tokenFamily  RefreshTokenFamily?
+  user        User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  membership  ProjectMembership   @relation(fields: [membershipId], references: [id], onDelete: Cascade)
+  tokenFamily RefreshTokenFamily?
 
   @@index([userId, status])
   @@index([deviceId, status])
@@ -335,10 +335,10 @@ model AuthSession {
 }
 
 model RefreshTokenFamily {
-  id        String         @id @default(uuid()) @db.Uuid
-  sessionId String         @unique @db.Uuid
-  userId    String         @db.Uuid
-  createdAt DateTime       @default(now())
+  id        String    @id @default(uuid()) @db.Uuid
+  sessionId String    @unique @db.Uuid
+  userId    String    @db.Uuid
+  createdAt DateTime  @default(now())
   revokedAt DateTime?
 
   session AuthSession    @relation(fields: [sessionId], references: [id], onDelete: Cascade)
@@ -350,21 +350,21 @@ model RefreshTokenFamily {
 }
 
 model RefreshToken {
-  id          String    @id @default(uuid()) @db.Uuid
-  familyId    String    @db.Uuid
-  userId      String    @db.Uuid
-  tokenHash   String    @unique @db.Char(64)
-  parentId    String?   @db.Uuid
-  replacedById String?  @db.Uuid
-  expiresAt   DateTime
-  usedAt      DateTime?
-  revokedAt   DateTime?
-  createdAt   DateTime  @default(now())
+  id           String    @id @default(uuid()) @db.Uuid
+  familyId     String    @db.Uuid
+  userId       String    @db.Uuid
+  tokenHash    String    @unique @db.Char(64)
+  parentId     String?   @db.Uuid
+  replacedById String?   @db.Uuid
+  expiresAt    DateTime
+  usedAt       DateTime?
+  revokedAt    DateTime?
+  createdAt    DateTime  @default(now())
 
   family     RefreshTokenFamily @relation(fields: [familyId], references: [id], onDelete: Cascade)
   user       User               @relation(fields: [userId], references: [id], onDelete: Cascade)
   parent     RefreshToken?      @relation("RefreshTokenChain", fields: [parentId], references: [id], onDelete: SetNull)
-  successors RefreshToken[]      @relation("RefreshTokenChain")
+  successors RefreshToken[]     @relation("RefreshTokenChain")
 
   @@index([familyId, usedAt, revokedAt])
   @@index([userId, expiresAt])
@@ -372,15 +372,15 @@ model RefreshToken {
 }
 
 model SigningKey {
-  id           String          @id @default(uuid()) @db.Uuid
-  kid          String          @unique @db.VarChar(128)
-  algorithm    String          @default("RS256") @db.VarChar(16)
-  publicJwk    Json
-  privateKeyRef String         @db.VarChar(500)
-  status       SigningKeyStatus @default(ACTIVE)
-  notBefore    DateTime
-  retireAt     DateTime?
-  createdAt    DateTime        @default(now())
+  id            String           @id @default(uuid()) @db.Uuid
+  kid           String           @unique @db.VarChar(128)
+  algorithm     String           @default("RS256") @db.VarChar(16)
+  publicJwk     Json
+  privateKeyRef String           @db.VarChar(500)
+  status        SigningKeyStatus @default(ACTIVE)
+  notBefore     DateTime
+  retireAt      DateTime?
+  createdAt     DateTime         @default(now())
 
   @@index([status, notBefore, retireAt])
   @@map("signing_keys")

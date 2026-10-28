@@ -12,6 +12,7 @@ export interface PermissionGrant {
 
 export interface PermissionMatrix {
   version: string;
+  staffScope: boolean;
   grants: PermissionGrant[];
   buildingIds: string[];
   apartmentIds: string[];
@@ -23,6 +24,7 @@ export interface AuthorizationRequest {
   permission: string;
   buildingId?: string;
   apartmentId?: string;
+  sessionId?: string;
 }
 
 export interface AuthorizationDecision {
@@ -33,7 +35,8 @@ export interface AuthorizationDecision {
     | 'BUILDING_SCOPE_REQUIRED'
     | 'EXPLICIT_DENY'
     | 'NO_MATCHING_PERMISSION'
-    | 'USER_NOT_IN_PROJECT';
+    | 'USER_NOT_IN_PROJECT'
+    | 'SESSION_REVOKED';
   authorizationVersion: string;
 }
 
@@ -64,8 +67,11 @@ export function evaluatePermission(
     return { allowed: false, reason: 'EXPLICIT_DENY', authorizationVersion: matrix.version };
   }
   if (applicable.some((grant) => grant.effect === 'ALLOW')) {
-    if (request.apartmentId && matrix.apartmentIds.length > 0 && !matrix.apartmentIds.includes(request.apartmentId)) {
-      return { allowed: false, reason: 'BUILDING_SCOPE_REQUIRED', authorizationVersion: matrix.version };
+    if (request.apartmentId) {
+      const apartmentScope = matrix.apartmentIds.includes(request.apartmentId);
+      const buildingScope = Boolean(request.buildingId && matrix.buildingIds.includes(request.buildingId) && applicable.some((grant) => grant.effect === 'ALLOW' && grant.scope.type === 'BUILDING' && grant.scope.buildingId === request.buildingId));
+      const projectStaffScope = matrix.staffScope && applicable.some((grant) => grant.effect === 'ALLOW' && grant.scope.type === 'PROJECT' && grant.scope.projectId === request.projectId);
+      if (!apartmentScope && !buildingScope && !projectStaffScope) return { allowed: false, reason: 'BUILDING_SCOPE_REQUIRED', authorizationVersion: matrix.version };
     }
     return { allowed: true, reason: 'ALLOWED', authorizationVersion: matrix.version };
   }

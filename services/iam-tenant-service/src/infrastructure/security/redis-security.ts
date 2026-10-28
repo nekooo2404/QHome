@@ -1,5 +1,5 @@
 import { createHmac, randomUUID } from 'node:crypto';
-import { LoginAttemptRateLimiter, PermissionCache, AuthorizationVersionStore } from '../../application/ports';
+import { LoginAttemptRateLimiter, PermissionCache, AuthorizationVersionStore, SessionRevocationStore } from '../../application/ports';
 import { PermissionMatrix } from '../../domain/authorization';
 
 export interface RedisClusterClient {
@@ -30,7 +30,16 @@ return {1, 0}
 
 const INVALIDATE_PERMISSION_CACHE_LUA = `
 redis.call('DEL', KEYS[1])
-return redis.call('INCR', KEYS[2])
+redis.call('SET', KEYS[2], ARGV[1])
+return 1
+`;
+
+const SET_PERMISSION_CACHE_LUA = `
+local current = redis.call('GET', KEYS[2])
+if current and current ~= ARGV[3] then return 0 end
+redis.call('SET', KEYS[2], ARGV[3])
+redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[2])
+return 1
 `;
 
 function hashKey(secret: string, input: string): string {
@@ -78,11 +87,28 @@ export class RedisPermissionCache implements PermissionCache {
   }
 
   async set(userId: string, projectId: string, matrix: PermissionMatrix, ttlSeconds: number): Promise<void> {
-    await this.redis.set(cacheKey(projectId, userId), JSON.stringify(matrix), 'EX', ttlSeconds);
+    const written = await this.redis.eval(SET_PERMISSION_CACHE_LUA, 2, cacheKey(projectId, userId), versionKey(projectId, userId), JSON.stringify(matrix), String(ttlSeconds), matrix.version);
+    if (Number(written) !== 1) return;
   }
 
-  async invalidate(userId: string, projectId: string): Promise<void> {
-    await this.redis.eval(INVALIDATE_PERMISSION_CACHE_LUA, 2, cacheKey(projectId, userId), versionKey(projectId, userId));
+  async invalidate(userId: string, projectId: string, version: string): Promise<void> {
+    await this.redis.eval(INVALIDATE_PERMISSION_CACHE_LUA, 2, cacheKey(projectId, userId), versionKey(projectId, userId), version);
+  }
+}
+
+function revocationKey(sessionId: string): string {
+  return `iam:revoked-session:{${sessionId}}`;
+}
+
+export class RedisSessionRevocationStore implements SessionRevocationStore {
+  constructor(private readonly redis: RedisClusterClient) {}
+
+  async revoke(sessionId: string, ttlSeconds: number): Promise<void> {
+    await this.redis.eval('redis.call("SET", KEYS[1], "1", "EX", ARGV[1]); return 1', 1, revocationKey(sessionId), String(Math.max(1, Math.ceil(ttlSeconds))));
+  }
+
+  async isRevoked(sessionId: string): Promise<boolean> {
+    return Boolean(await this.redis.get(revocationKey(sessionId)));
   }
 }
 

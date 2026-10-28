@@ -4,6 +4,7 @@ import {
   Clock,
   IdGenerator,
   LoginAttemptRateLimiter,
+  SessionRevocationStore,
   PasswordHasher,
   RefreshTokenGenerator,
   TokenHasher,
@@ -58,12 +59,14 @@ export class AuthenticationService {
     private readonly accessTokenSigner: AccessTokenSigner,
     private readonly refreshTokenGenerator: RefreshTokenGenerator,
     private readonly rateLimiter: LoginAttemptRateLimiter,
+    private readonly sessionRevocation: SessionRevocationStore,
     private readonly clock: Clock,
     private readonly ids: IdGenerator,
     private readonly options: AuthenticationServiceOptions,
   ) {}
 
   async login(command: LoginCommand): Promise<AuthenticationResult> {
+    if (!command.projectId?.trim() || command.projectId.length > 128 || !command.deviceId?.trim() || command.deviceId.length > 160) throw new InvalidCredentialsError();
     const email = normalizeEmail(command.email);
     await this.consumeLoginLimit(`project:${command.projectId}:email:${email}`);
     if (command.ipHash) {
@@ -143,6 +146,7 @@ export class AuthenticationService {
     });
 
     if (result.status === 'REUSE_DETECTED') {
+      await this.sessionRevocation.revoke(result.sessionId, this.options.accessTokenExpiresInSeconds);
       throw new RefreshTokenReuseDetectedError();
     }
     if (result.status === 'INVALID') {
@@ -162,10 +166,12 @@ export class AuthenticationService {
 
   async logout(sessionId: string, userId: string): Promise<void> {
     await this.repository.revokeSession(sessionId, userId, this.clock.now());
+    await this.sessionRevocation.revoke(sessionId, this.options.accessTokenExpiresInSeconds);
   }
 
   async logoutAll(userId: string): Promise<void> {
-    await this.repository.revokeAllSessions(userId, this.clock.now());
+    const sessionIds = await this.repository.revokeAllSessions(userId, this.clock.now());
+    await Promise.all(sessionIds.map((sessionId) => this.sessionRevocation.revoke(sessionId, this.options.accessTokenExpiresInSeconds)));
   }
 
   private async consumeLoginLimit(key: string): Promise<void> {

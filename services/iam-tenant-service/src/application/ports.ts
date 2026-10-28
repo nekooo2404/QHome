@@ -41,6 +41,11 @@ export interface LoginAttemptRateLimiter {
   consume(key: string, now: Date): Promise<{ allowed: boolean; retryAfterMs: number }>;
 }
 
+export interface SessionRevocationStore {
+  revoke(sessionId: string, ttlSeconds: number): Promise<void>;
+  isRevoked(sessionId: string): Promise<boolean>;
+}
+
 export interface AuthUserRecord extends AuthenticatedUser {
   membership: TenantMembership | null;
 }
@@ -70,7 +75,7 @@ export type RefreshRotationResult =
       session: SessionRecord;
     }
   | { status: 'INVALID' }
-  | { status: 'REUSE_DETECTED'; familyId: string; projectId: string };
+  | { status: 'REUSE_DETECTED'; familyId: string; sessionId: string; projectId: string };
 
 export interface AuthRepository {
   findUserForLogin(emailNormalized: string, projectId: string): Promise<AuthUserRecord | null>;
@@ -91,7 +96,7 @@ export interface AuthRepository {
   }): Promise<SessionRecord>;
   rotateRefreshToken(input: RefreshRotationInput): Promise<RefreshRotationResult>;
   revokeSession(sessionId: string, userId: string, now: Date): Promise<void>;
-  revokeAllSessions(userId: string, now: Date): Promise<void>;
+  revokeAllSessions(userId: string, now: Date): Promise<string[]>;
   getAuthorizationMatrix(userId: string, projectId: string): Promise<PermissionMatrix | null>;
   getTenantContext(userId: string, projectId: string): Promise<PermissionMatrix | null>;
   replaceUserPermissionOverride(input: {
@@ -116,7 +121,7 @@ export interface AuthRepository {
 export interface PermissionCache {
   get(userId: string, projectId: string): Promise<PermissionMatrix | null>;
   set(userId: string, projectId: string, matrix: PermissionMatrix, ttlSeconds: number): Promise<void>;
-  invalidate(userId: string, projectId: string): Promise<void>;
+  invalidate(userId: string, projectId: string, version: string): Promise<void>;
 }
 
 export interface EventPublisher {
@@ -141,4 +146,22 @@ export interface UserScopeSnapshot {
   projectId: string;
   status: UserStatus;
   userType: UserType;
+}
+
+export interface TenantAdminContext {
+  actorUserId: string;
+  projectId: string;
+  authenticatedTenantId: string;
+  sessionId?: string;
+  correlationId: string;
+}
+
+export interface TenantAdminRepository {
+  createProject(input: { code: string; name: string; actorUserId: string; correlationId: string }): Promise<{ id: string; code: string; name: string; status: string }>;
+  createBuilding(input: { projectId: string; code: string; name: string; actorUserId: string; correlationId: string }): Promise<{ id: string; projectId: string; code: string; name: string; status: string }>;
+  createDepartment(input: { projectId: string; code: string; name: string; description?: string; actorUserId: string; correlationId: string }): Promise<{ id: string; projectId: string; code: string; name: string; isActive: boolean }>;
+  provisionUser(input: { projectId: string; emailNormalized: string; displayName: string; userType: UserType; passwordHash: string; apartmentId?: string; buildingIds: string[]; actorUserId: string; correlationId: string }): Promise<{ userId: string; membershipId: string; projectId: string; emailNormalized: string; status: string }>;
+  assignRole(input: { projectId: string; userId: string; roleCode: string; buildingIds: string[]; actorUserId: string; correlationId: string }): Promise<{ userId: string; projectId: string; authorizationVersion: string }>;
+  addDepartmentMember(input: { projectId: string; departmentCode: string; userId: string; actorUserId: string; correlationId: string }): Promise<{ userId: string; projectId: string; authorizationVersion: string }>;
+  bindDepartmentRole(input: { projectId: string; departmentCode: string; roleCode: string; actorUserId: string; correlationId: string }): Promise<{ authorizationVersions: Array<{ userId: string; version: string }>; projectId: string }>;
 }
